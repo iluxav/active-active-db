@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use a2db_proto::replication::v1::{
     replication_message::Message, replication_service_client::ReplicationServiceClient,
@@ -24,6 +25,8 @@ pub struct ReplicationClient {
     delta_rx: broadcast::Receiver<CoreDelta>,
     /// Protocol version
     protocol_version: u32,
+    /// Metrics for tracking replication stats
+    metrics: Arc<Metrics>,
 }
 
 impl ReplicationClient {
@@ -32,6 +35,7 @@ impl ReplicationClient {
         local_replica_id: String,
         store: Arc<CounterStore>,
         delta_rx: broadcast::Receiver<CoreDelta>,
+        metrics: Arc<Metrics>,
     ) -> Self {
         Self {
             peer_addr,
@@ -39,6 +43,7 @@ impl ReplicationClient {
             store,
             delta_rx,
             protocol_version: 1,
+            metrics,
         }
     }
 
@@ -183,6 +188,7 @@ impl ReplicationClient {
                                 for proto_delta in &batch.deltas {
                                     let delta = from_proto_delta(proto_delta);
                                     store.apply_delta(&delta);
+                                    self.metrics.delta_received();
                                 }
 
                                 // Send ack
@@ -235,6 +241,7 @@ impl ReplicationClient {
                 Ok(delta) => {
                     let core_delta = from_proto_delta(&delta);
                     self.store.apply_delta(&core_delta);
+                    self.metrics.delta_received();
                     count += 1;
                 }
                 Err(e) => {

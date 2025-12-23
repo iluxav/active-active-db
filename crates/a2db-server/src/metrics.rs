@@ -133,12 +133,10 @@ impl Metrics {
         self.deltas_send_errors.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
     pub fn delta_received(&self) {
         self.deltas_received_total.fetch_add(1, Ordering::Relaxed);
     }
 
-    #[allow(dead_code)]
     pub fn set_keys_total(&self, count: u64) {
         self.keys_total.store(count, Ordering::Relaxed);
     }

@@ -1,3 +1,4 @@
+use crate::metrics::Metrics;
 use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use a2db_proto::replication::v1::{
     replication_message::Message, replication_service_server::ReplicationService, Ack,
@@ -19,14 +20,21 @@ pub struct ReplicationServiceImpl {
     delta_broadcast: broadcast::Sender<CoreDelta>,
     /// Protocol version for compatibility checking
     protocol_version: u32,
+    /// Metrics for tracking replication stats
+    metrics: Arc<Metrics>,
 }
 
 impl ReplicationServiceImpl {
-    pub fn new(store: Arc<CounterStore>, delta_broadcast: broadcast::Sender<CoreDelta>) -> Self {
+    pub fn new(
+        store: Arc<CounterStore>,
+        delta_broadcast: broadcast::Sender<CoreDelta>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
         Self {
             store,
             delta_broadcast,
             protocol_version: 1,
+            metrics,
         }
     }
 
@@ -118,6 +126,7 @@ impl ReplicationService for ReplicationServiceImpl {
         // Spawn task to handle inbound messages
         let tx_clone = tx.clone();
         let store_clone = Arc::clone(&store);
+        let metrics_clone = Arc::clone(&self.metrics);
         tokio::spawn(async move {
             // First message should be handshake
             let first_msg = match inbound.next().await {
@@ -181,6 +190,7 @@ impl ReplicationService for ReplicationServiceImpl {
                                     for proto_delta in &batch.deltas {
                                         let delta = Self::from_proto_delta(proto_delta);
                                         store_clone.apply_delta(&delta);
+                                        metrics_clone.delta_received();
                                     }
 
                                     // Send ack

@@ -18,6 +18,7 @@ use persistence::PersistenceManager;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tonic::transport::Server;
 use tracing::{error, info};
@@ -97,6 +98,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // Start background task to update key count metrics
+    if config.metrics.enabled {
+        let metrics_store = Arc::clone(&store);
+        let metrics_ref = Arc::clone(&metrics);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            loop {
+                interval.tick().await;
+                metrics_ref.set_keys_total(metrics_store.key_count() as u64);
+            }
+        });
+    }
+
     // Create channels for delta distribution
     // mpsc channel for client service -> replication broadcast
     // 100K capacity reduces backpressure at high concurrency
@@ -120,7 +134,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_service = CounterServiceImpl::new(Arc::clone(&store), delta_tx);
 
     // Create replication service
-    let replication_service = ReplicationServiceImpl::new(Arc::clone(&store), broadcast_tx.clone());
+    let replication_service = ReplicationServiceImpl::new(
+        Arc::clone(&store),
+        broadcast_tx.clone(),
+        Arc::clone(&metrics),
+    );
 
     // Start Redis-compatible server if configured
     if let Some(redis_addr) = &config.server.redis_listen_addr {
@@ -145,6 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.identity.replica_id.clone(),
             Arc::clone(&store),
             broadcast_tx.subscribe(),
+            Arc::clone(&metrics),
         );
 
         tokio::spawn(async move {
