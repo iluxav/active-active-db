@@ -110,7 +110,14 @@ async fn handle_connection(
             .await?;
         } else {
             // Inline command format (telnet-style)
-            handle_inline_command(&line, &store, &delta_tx, &mut response_buf, &metrics, &mut args);
+            handle_inline_command(
+                &line,
+                &store,
+                &delta_tx,
+                &mut response_buf,
+                &metrics,
+                &mut args,
+            );
         }
 
         writer.write_all(response_buf.as_bytes()).await?;
