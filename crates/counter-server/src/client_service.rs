@@ -41,18 +41,23 @@ impl CounterService for CounterServiceImpl {
             return Ok(Response::new(IncrByResponse { value }));
         }
 
-        let (value, delta) = self.store.increment_str(&req.key, req.amount);
+        match self.store.increment_str(&req.key, req.amount) {
+            Some((value, delta)) => {
+                // Send delta for replication (non-blocking)
+                // If the channel is full, we log a warning but don't fail the request
+                // The delta will be part of the next anti-entropy sync
+                if let Err(e) = self.delta_tx.try_send(delta) {
+                    tracing::warn!("Failed to queue delta for replication: {}", e);
+                }
 
-        // Send delta for replication (non-blocking)
-        // If the channel is full, we log a warning but don't fail the request
-        // The delta will be part of the next anti-entropy sync
-        if let Err(e) = self.delta_tx.try_send(delta) {
-            tracing::warn!("Failed to queue delta for replication: {}", e);
+                debug!(value = value, "Incremented counter");
+
+                Ok(Response::new(IncrByResponse { value }))
+            }
+            None => {
+                Err(Status::failed_precondition("WRONGTYPE Operation against a key holding the wrong kind of value"))
+            }
         }
-
-        debug!(value = value, "Incremented counter");
-
-        Ok(Response::new(IncrByResponse { value }))
     }
 
     #[instrument(skip(self, request), fields(key = %request.get_ref().key))]

@@ -33,18 +33,34 @@ message Handshake {
   uint32 protocol_version = 2;
 }
 
+// Type of delta operation
+enum DeltaType {
+  // Positive (increment) counter delta - default for backwards compatibility
+  DELTA_TYPE_P = 0;
+  // Negative (decrement) counter delta
+  DELTA_TYPE_N = 1;
+  // String value delta (LWW-Register)
+  DELTA_TYPE_S = 2;
+}
+
 // A single delta representing one component update
 message Delta {
   // The counter key
   string key = 1;
-  // The replica that originated this increment
+  // The replica that originated this update
   string origin_replica_id = 2;
-  // The current component value for this replica
+  // The current component value for this replica (for P/N deltas)
   uint64 component_value = 3;
   // Optional expiration timestamp in milliseconds since Unix epoch
   // Uses MAX merge semantics: later expiration always wins
   // 0 means no expiration (for backwards compatibility with proto3)
   optional uint64 expires_at_ms = 4;
+  // Type of delta (P, N, or S)
+  DeltaType delta_type = 5;
+  // String value (for S deltas only)
+  optional string string_value = 6;
+  // Timestamp for LWW ordering (for S deltas only, milliseconds since epoch)
+  optional uint64 timestamp_ms = 7;
 }
 
 // A batch of deltas with a sequence number

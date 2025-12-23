@@ -2,6 +2,23 @@ use crate::gcounter::{Key, ReplicaId};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Type of delta operation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DeltaType {
+    /// Positive (increment) counter delta
+    P,
+    /// Negative (decrement) counter delta
+    N,
+    /// String value delta (LWW-Register)
+    S,
+}
+
+impl Default for DeltaType {
+    fn default() -> Self {
+        DeltaType::P
+    }
+}
+
 /// A single delta representing one component update.
 /// This is the unit of replication between replicas.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,20 +27,48 @@ pub struct Delta {
     pub key: Key,
     /// The replica that originated this increment
     pub origin_replica_id: ReplicaId,
-    /// The current component value for this replica
+    /// The current component value for this replica (for P/N deltas)
     pub component_value: u64,
+    /// Type of delta (P, N, or S)
+    pub delta_type: DeltaType,
     /// Optional expiration timestamp in milliseconds since Unix epoch.
     /// None means no expiration. Uses MAX merge semantics across replicas.
     pub expires_at_ms: Option<u64>,
+    /// String value (for S deltas only)
+    pub string_value: Option<String>,
+    /// Timestamp for LWW ordering (for S deltas only)
+    pub timestamp_ms: Option<u64>,
 }
 
 impl Delta {
+    /// Create a new P (increment) delta
     pub fn new(key: Key, origin_replica_id: ReplicaId, component_value: u64) -> Self {
         Self {
             key,
             origin_replica_id,
             component_value,
+            delta_type: DeltaType::P,
             expires_at_ms: None,
+            string_value: None,
+            timestamp_ms: None,
+        }
+    }
+
+    /// Create a delta with specific type
+    pub fn with_type(
+        key: Key,
+        origin_replica_id: ReplicaId,
+        component_value: u64,
+        delta_type: DeltaType,
+    ) -> Self {
+        Self {
+            key,
+            origin_replica_id,
+            component_value,
+            delta_type,
+            expires_at_ms: None,
+            string_value: None,
+            timestamp_ms: None,
         }
     }
 
@@ -38,7 +83,48 @@ impl Delta {
             key,
             origin_replica_id,
             component_value,
+            delta_type: DeltaType::P,
             expires_at_ms,
+            string_value: None,
+            timestamp_ms: None,
+        }
+    }
+
+    /// Create a delta with type and expiration
+    pub fn with_type_and_expiration(
+        key: Key,
+        origin_replica_id: ReplicaId,
+        component_value: u64,
+        delta_type: DeltaType,
+        expires_at_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            key,
+            origin_replica_id,
+            component_value,
+            delta_type,
+            expires_at_ms,
+            string_value: None,
+            timestamp_ms: None,
+        }
+    }
+
+    /// Create a string delta (LWW-Register)
+    pub fn string(
+        key: Key,
+        origin_replica_id: ReplicaId,
+        value: String,
+        timestamp_ms: u64,
+        expires_at_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            key,
+            origin_replica_id,
+            component_value: 0,
+            delta_type: DeltaType::S,
+            expires_at_ms,
+            string_value: Some(value),
+            timestamp_ms: Some(timestamp_ms),
         }
     }
 
@@ -48,7 +134,10 @@ impl Delta {
             key: Arc::from(key),
             origin_replica_id: Arc::from(origin_replica_id),
             component_value,
+            delta_type: DeltaType::P,
             expires_at_ms: None,
+            string_value: None,
+            timestamp_ms: None,
         }
     }
 
@@ -63,28 +152,34 @@ impl Delta {
             key: Arc::from(key),
             origin_replica_id: Arc::from(origin_replica_id),
             component_value,
+            delta_type: DeltaType::P,
             expires_at_ms,
+            string_value: None,
+            timestamp_ms: None,
         }
     }
 }
 
-/// Compacted entry storing both component value and expiration.
+/// Compacted entry storing value, expiration, and string data.
 #[derive(Debug, Clone)]
 struct CompactedEntry {
     component_value: u64,
+    delta_type: DeltaType,
     expires_at_ms: Option<u64>,
+    string_value: Option<String>,
+    timestamp_ms: Option<u64>,
 }
 
 /// Delta buffer for compaction before sending.
-/// Keeps only the latest (highest) value for each (key, replica_id) pair.
+/// Keeps only the latest (highest) value for each (key, replica_id, delta_type) tuple.
 /// For expiration, uses MAX semantics (always extend, never shorten).
 ///
 /// This is critical for efficiency: if a key is incremented 1000 times/second,
 /// we only need to send the final value, not all intermediate values.
 #[derive(Debug, Default)]
 pub struct DeltaCompactor {
-    /// Map: (key, replica_id) -> compacted entry (value + expiration)
-    pending: HashMap<(Key, ReplicaId), CompactedEntry>,
+    /// Map: (key, replica_id, delta_type) -> compacted entry
+    pending: HashMap<(Key, ReplicaId, DeltaType), CompactedEntry>,
 }
 
 impl DeltaCompactor {
@@ -93,14 +188,30 @@ impl DeltaCompactor {
     }
 
     /// Add a delta, compacting with existing if present.
-    /// Takes MAX of component_value and MAX of expires_at_ms.
+    /// For P/N: Takes MAX of component_value.
+    /// For S: Takes entry with higher (timestamp_ms, replica_id).
+    /// Always takes MAX of expires_at_ms.
     pub fn add(&mut self, delta: Delta) {
-        let key = (delta.key, delta.origin_replica_id);
+        let key = (delta.key.clone(), delta.origin_replica_id.clone(), delta.delta_type);
+
         self.pending
             .entry(key)
             .and_modify(|entry| {
-                // Take max of component values
-                entry.component_value = entry.component_value.max(delta.component_value);
+                match delta.delta_type {
+                    DeltaType::P | DeltaType::N => {
+                        // Take max of component values
+                        entry.component_value = entry.component_value.max(delta.component_value);
+                    }
+                    DeltaType::S => {
+                        // LWW: take the one with higher timestamp
+                        let new_ts = delta.timestamp_ms.unwrap_or(0);
+                        let old_ts = entry.timestamp_ms.unwrap_or(0);
+                        if new_ts > old_ts {
+                            entry.string_value = delta.string_value.clone();
+                            entry.timestamp_ms = delta.timestamp_ms;
+                        }
+                    }
+                }
                 // Take max of expirations (extend, never shorten)
                 entry.expires_at_ms = match (entry.expires_at_ms, delta.expires_at_ms) {
                     (None, exp) => exp,
@@ -110,7 +221,10 @@ impl DeltaCompactor {
             })
             .or_insert(CompactedEntry {
                 component_value: delta.component_value,
+                delta_type: delta.delta_type,
                 expires_at_ms: delta.expires_at_ms,
+                string_value: delta.string_value,
+                timestamp_ms: delta.timestamp_ms,
             });
     }
 
@@ -126,8 +240,14 @@ impl DeltaCompactor {
     pub fn drain(&mut self) -> Vec<Delta> {
         self.pending
             .drain()
-            .map(|((key, replica_id), entry)| {
-                Delta::with_expiration(key, replica_id, entry.component_value, entry.expires_at_ms)
+            .map(|((key, replica_id, delta_type), entry)| Delta {
+                key,
+                origin_replica_id: replica_id,
+                component_value: entry.component_value,
+                delta_type,
+                expires_at_ms: entry.expires_at_ms,
+                string_value: entry.string_value,
+                timestamp_ms: entry.timestamp_ms,
             })
             .collect()
     }
@@ -136,13 +256,14 @@ impl DeltaCompactor {
     pub fn peek(&self) -> Vec<Delta> {
         self.pending
             .iter()
-            .map(|((key, replica_id), entry)| {
-                Delta::with_expiration(
-                    key.clone(),
-                    replica_id.clone(),
-                    entry.component_value,
-                    entry.expires_at_ms,
-                )
+            .map(|((key, replica_id, delta_type), entry)| Delta {
+                key: key.clone(),
+                origin_replica_id: replica_id.clone(),
+                component_value: entry.component_value,
+                delta_type: *delta_type,
+                expires_at_ms: entry.expires_at_ms,
+                string_value: entry.string_value.clone(),
+                timestamp_ms: entry.timestamp_ms,
             })
             .collect()
     }
@@ -152,7 +273,7 @@ impl DeltaCompactor {
         self.pending.is_empty()
     }
 
-    /// Get the number of unique (key, replica_id) pairs
+    /// Get the number of unique (key, replica_id, delta_type) tuples
     pub fn len(&self) -> usize {
         self.pending.len()
     }
@@ -181,6 +302,7 @@ mod tests {
         assert_eq!(delta.key.as_ref(), "key1");
         assert_eq!(delta.origin_replica_id.as_ref(), "r1");
         assert_eq!(delta.component_value, 42);
+        assert_eq!(delta.delta_type, DeltaType::P);
     }
 
     #[test]
@@ -218,6 +340,41 @@ mod tests {
         let deltas = compactor.drain();
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].component_value, 10);
+    }
+
+    #[test]
+    fn test_compactor_p_and_n_separate() {
+        let mut compactor = DeltaCompactor::new();
+
+        // P and N deltas for same key/replica should be separate entries
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 10, DeltaType::P));
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 5, DeltaType::N));
+
+        assert_eq!(compactor.len(), 2);
+
+        let deltas = compactor.drain();
+        assert_eq!(deltas.len(), 2);
+    }
+
+    #[test]
+    fn test_compactor_p_and_n_max_merge() {
+        let mut compactor = DeltaCompactor::new();
+
+        // Multiple P deltas - should take max
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 5, DeltaType::P));
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 10, DeltaType::P));
+
+        // Multiple N deltas - should take max
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 3, DeltaType::N));
+        compactor.add(Delta::with_type(key("key1"), replica("r1"), 7, DeltaType::N));
+
+        let deltas = compactor.drain();
+
+        let p_delta = deltas.iter().find(|d| d.delta_type == DeltaType::P).unwrap();
+        let n_delta = deltas.iter().find(|d| d.delta_type == DeltaType::N).unwrap();
+
+        assert_eq!(p_delta.component_value, 10);
+        assert_eq!(n_delta.component_value, 7);
     }
 
     #[test]

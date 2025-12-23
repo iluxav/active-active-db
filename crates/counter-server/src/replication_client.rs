@@ -1,7 +1,7 @@
-use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor};
+use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use counter_proto::replication::v1::{
     replication_service_client::ReplicationServiceClient, AntiEntropyRequest, DeltaBatch,
-    Handshake, ReplicationMessage, replication_message::Message,
+    DeltaType, Handshake, ReplicationMessage, replication_message::Message,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -156,14 +156,7 @@ impl ReplicationClient {
                             let batch = ReplicationMessage {
                                 message: Some(Message::DeltaBatch(DeltaBatch {
                                     sequence: seq,
-                                    deltas: deltas.iter().map(|d| {
-                                        counter_proto::replication::v1::Delta {
-                                            key: d.key.to_string(),
-                                            origin_replica_id: d.origin_replica_id.to_string(),
-                                            component_value: d.component_value,
-                                            expires_at_ms: d.expires_at_ms,
-                                        }
-                                    }).collect(),
+                                    deltas: deltas.iter().map(to_proto_delta).collect(),
                                 })),
                             };
 
@@ -191,12 +184,7 @@ impl ReplicationClient {
                                 );
 
                                 for proto_delta in &batch.deltas {
-                                    let delta = CoreDelta::from_strs_with_expiration(
-                                        &proto_delta.key,
-                                        &proto_delta.origin_replica_id,
-                                        proto_delta.component_value,
-                                        proto_delta.expires_at_ms,
-                                    );
+                                    let delta = from_proto_delta(proto_delta);
                                     store.apply_delta(&delta);
                                 }
 
@@ -250,12 +238,7 @@ impl ReplicationClient {
         while let Some(result) = stream.next().await {
             match result {
                 Ok(delta) => {
-                    let core_delta = CoreDelta::from_strs_with_expiration(
-                        &delta.key,
-                        &delta.origin_replica_id,
-                        delta.component_value,
-                        delta.expires_at_ms,
-                    );
+                    let core_delta = from_proto_delta(&delta);
                     self.store.apply_delta(&core_delta);
                     count += 1;
                 }
@@ -279,4 +262,57 @@ fn rand_jitter(max_ms: u64) -> u64 {
         .unwrap()
         .subsec_nanos() as u64;
     nanos % max_ms
+}
+
+/// Convert core DeltaType to proto DeltaType
+fn to_proto_delta_type(dt: CoreDeltaType) -> i32 {
+    match dt {
+        CoreDeltaType::P => DeltaType::P as i32,
+        CoreDeltaType::N => DeltaType::N as i32,
+        CoreDeltaType::S => DeltaType::S as i32,
+    }
+}
+
+/// Convert proto DeltaType to core DeltaType
+fn from_proto_delta_type(dt: i32) -> CoreDeltaType {
+    match DeltaType::try_from(dt) {
+        Ok(DeltaType::N) => CoreDeltaType::N,
+        Ok(DeltaType::S) => CoreDeltaType::S,
+        _ => CoreDeltaType::P, // Default to P for backwards compatibility
+    }
+}
+
+/// Convert core Delta to proto Delta
+fn to_proto_delta(d: &CoreDelta) -> counter_proto::replication::v1::Delta {
+    counter_proto::replication::v1::Delta {
+        key: d.key.to_string(),
+        origin_replica_id: d.origin_replica_id.to_string(),
+        component_value: d.component_value,
+        expires_at_ms: d.expires_at_ms,
+        delta_type: to_proto_delta_type(d.delta_type),
+        string_value: d.string_value.clone(),
+        timestamp_ms: d.timestamp_ms,
+    }
+}
+
+/// Convert proto Delta to core Delta
+fn from_proto_delta(delta: &counter_proto::replication::v1::Delta) -> CoreDelta {
+    let delta_type = from_proto_delta_type(delta.delta_type);
+
+    match delta_type {
+        CoreDeltaType::S => CoreDelta::string(
+            delta.key.as_str().into(),
+            delta.origin_replica_id.as_str().into(),
+            delta.string_value.clone().unwrap_or_default(),
+            delta.timestamp_ms.unwrap_or(0),
+            delta.expires_at_ms,
+        ),
+        _ => CoreDelta::with_type_and_expiration(
+            delta.key.as_str().into(),
+            delta.origin_replica_id.as_str().into(),
+            delta.component_value,
+            delta_type,
+            delta.expires_at_ms,
+        ),
+    }
 }

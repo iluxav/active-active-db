@@ -1,5 +1,6 @@
-use crate::delta::Delta;
+use crate::delta::{Delta, DeltaType};
 use crate::gcounter::{GCounter, Key, ReplicaId};
+use crate::lww_register::LWWRegister;
 use crate::snapshot::Snapshot;
 use dashmap::DashMap;
 use std::collections::HashMap;
@@ -9,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Entry in the counter store, containing the counter and optional expiration.
 #[derive(Debug, Clone, Default)]
 pub struct CounterEntry {
-    /// The G-Counter CRDT
+    /// The PN-Counter CRDT
     pub counter: GCounter,
     /// Optional expiration timestamp in milliseconds since Unix epoch.
     /// None means the key never expires.
@@ -22,7 +23,66 @@ impl CounterEntry {
     }
 
     pub fn with_expiration(counter: GCounter, expires_at_ms: Option<u64>) -> Self {
-        Self { counter, expires_at_ms }
+        Self {
+            counter,
+            expires_at_ms,
+        }
+    }
+}
+
+/// Entry for string values using LWW-Register
+#[derive(Debug, Clone)]
+pub struct StringEntry {
+    /// The LWW-Register CRDT
+    pub register: LWWRegister,
+    /// Optional expiration timestamp in milliseconds since Unix epoch.
+    pub expires_at_ms: Option<u64>,
+}
+
+impl StringEntry {
+    pub fn new(register: LWWRegister) -> Self {
+        Self {
+            register,
+            expires_at_ms: None,
+        }
+    }
+
+    pub fn with_expiration(register: LWWRegister, expires_at_ms: Option<u64>) -> Self {
+        Self {
+            register,
+            expires_at_ms,
+        }
+    }
+}
+
+/// Value type stored in the database
+#[derive(Debug, Clone)]
+pub enum ValueType {
+    Counter(CounterEntry),
+    String(StringEntry),
+}
+
+impl Default for ValueType {
+    fn default() -> Self {
+        ValueType::Counter(CounterEntry::default())
+    }
+}
+
+impl ValueType {
+    /// Get the expiration timestamp
+    pub fn expires_at_ms(&self) -> Option<u64> {
+        match self {
+            ValueType::Counter(e) => e.expires_at_ms,
+            ValueType::String(e) => e.expires_at_ms,
+        }
+    }
+
+    /// Set the expiration timestamp
+    pub fn set_expires_at_ms(&mut self, expires_at_ms: Option<u64>) {
+        match self {
+            ValueType::Counter(e) => e.expires_at_ms = expires_at_ms,
+            ValueType::String(e) => e.expires_at_ms = expires_at_ms,
+        }
     }
 }
 
@@ -35,12 +95,12 @@ impl CounterEntry {
 pub struct CounterStore {
     /// The local replica's ID - stable across restarts
     local_replica_id: ReplicaId,
-    /// Map of key -> CounterEntry, using DashMap for concurrent access
-    counters: DashMap<Key, CounterEntry>,
+    /// Map of key -> ValueType, using DashMap for concurrent access
+    entries: DashMap<Key, ValueType>,
 }
 
 /// Get current time in milliseconds since Unix epoch
-fn current_time_ms() -> u64 {
+pub fn current_time_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -52,7 +112,7 @@ impl CounterStore {
     pub fn new(local_replica_id: ReplicaId) -> Self {
         Self {
             local_replica_id,
-            counters: DashMap::new(),
+            entries: DashMap::new(),
         }
     }
 
@@ -68,8 +128,8 @@ impl CounterStore {
 
     /// Check if an entry is expired
     #[inline]
-    fn is_expired(entry: &CounterEntry) -> bool {
-        match entry.expires_at_ms {
+    fn is_entry_expired(entry: &ValueType) -> bool {
+        match entry.expires_at_ms() {
             Some(exp) => current_time_ms() >= exp,
             None => false,
         }
@@ -78,83 +138,238 @@ impl CounterStore {
     /// Increment a counter by amount.
     /// Returns (new total value, delta to replicate).
     ///
-    /// The delta contains the new component value for this replica,
-    /// which should be broadcast to other replicas.
-    /// Note: Incrementing does NOT affect an existing TTL.
-    pub fn increment(&self, key: &Key, amount: u64) -> (u64, Delta) {
-        let mut entry = self.counters.entry(key.clone()).or_default();
-        let counter_entry = entry.value_mut();
-        let new_component = counter_entry.counter.increment(&self.local_replica_id, amount);
-        let total = counter_entry.counter.value();
+    /// Returns None if the key exists but holds a string value.
+    pub fn increment(&self, key: &Key, amount: u64) -> Option<(i64, Delta)> {
+        let mut entry = self.entries.entry(key.clone()).or_default();
 
-        // Include expiration in delta for replication
-        let delta = Delta::with_expiration(
-            key.clone(),
-            self.local_replica_id.clone(),
-            new_component,
-            counter_entry.expires_at_ms,
-        );
+        match entry.value_mut() {
+            ValueType::Counter(counter_entry) => {
+                let new_component = counter_entry
+                    .counter
+                    .increment(&self.local_replica_id, amount);
+                let total = counter_entry.counter.value();
 
-        (total, delta)
+                let delta = Delta::with_type_and_expiration(
+                    key.clone(),
+                    self.local_replica_id.clone(),
+                    new_component,
+                    DeltaType::P,
+                    counter_entry.expires_at_ms,
+                );
+
+                Some((total, delta))
+            }
+            ValueType::String(_) => None, // Type mismatch
+        }
     }
 
     /// Increment using a string slice key (convenience method)
-    pub fn increment_str(&self, key: &str, amount: u64) -> (u64, Delta) {
+    pub fn increment_str(&self, key: &str, amount: u64) -> Option<(i64, Delta)> {
         let key: Key = Arc::from(key);
         self.increment(&key, amount)
     }
 
-    /// Get a single counter's value.
-    /// Returns 0 for keys that don't exist or are expired.
-    pub fn get(&self, key: &str) -> u64 {
-        self.counters
+    /// Decrement a counter by amount.
+    /// Returns (new total value, delta to replicate).
+    ///
+    /// Returns None if the key exists but holds a string value.
+    pub fn decrement(&self, key: &Key, amount: u64) -> Option<(i64, Delta)> {
+        let mut entry = self.entries.entry(key.clone()).or_default();
+
+        match entry.value_mut() {
+            ValueType::Counter(counter_entry) => {
+                let new_component = counter_entry
+                    .counter
+                    .decrement(&self.local_replica_id, amount);
+                let total = counter_entry.counter.value();
+
+                let delta = Delta::with_type_and_expiration(
+                    key.clone(),
+                    self.local_replica_id.clone(),
+                    new_component,
+                    DeltaType::N,
+                    counter_entry.expires_at_ms,
+                );
+
+                Some((total, delta))
+            }
+            ValueType::String(_) => None, // Type mismatch
+        }
+    }
+
+    /// Decrement using a string slice key (convenience method)
+    pub fn decrement_str(&self, key: &str, amount: u64) -> Option<(i64, Delta)> {
+        let key: Key = Arc::from(key);
+        self.decrement(&key, amount)
+    }
+
+    /// Set a string value using LWW-Register.
+    /// Returns the delta to replicate, or None if key holds a counter.
+    pub fn set_string(&self, key: &Key, value: String) -> Option<Delta> {
+        let timestamp = current_time_ms();
+        let register = LWWRegister::new(value.clone(), timestamp, self.local_replica_id.clone());
+
+        let mut entry = self
+            .entries
+            .entry(key.clone())
+            .or_insert_with(|| ValueType::String(StringEntry::new(register.clone())));
+
+        match entry.value_mut() {
+            ValueType::String(string_entry) => {
+                string_entry.register = register;
+                Some(Delta::string(
+                    key.clone(),
+                    self.local_replica_id.clone(),
+                    value,
+                    timestamp,
+                    string_entry.expires_at_ms,
+                ))
+            }
+            ValueType::Counter(_) => None, // Type mismatch
+        }
+    }
+
+    /// Set string using a string slice key (convenience method)
+    pub fn set_string_str(&self, key: &str, value: String) -> Option<Delta> {
+        let key: Key = Arc::from(key);
+        self.set_string(&key, value)
+    }
+
+    /// Get a counter's value (returns 0 for non-existent, expired, or string keys)
+    pub fn get(&self, key: &str) -> i64 {
+        self.entries
             .get(key)
             .and_then(|entry| {
-                if Self::is_expired(entry.value()) {
+                if Self::is_entry_expired(entry.value()) {
                     None
                 } else {
-                    Some(entry.value().counter.value())
+                    match entry.value() {
+                        ValueType::Counter(e) => Some(e.counter.value()),
+                        ValueType::String(_) => None,
+                    }
                 }
             })
             .unwrap_or(0)
     }
 
+    /// Get a string value (returns None for non-existent, expired, or counter keys)
+    pub fn get_string(&self, key: &str) -> Option<String> {
+        self.entries.get(key).and_then(|entry| {
+            if Self::is_entry_expired(entry.value()) {
+                None
+            } else {
+                match entry.value() {
+                    ValueType::String(e) => Some(e.register.value().to_string()),
+                    ValueType::Counter(_) => None,
+                }
+            }
+        })
+    }
+
+    /// Get the type of a key ("string", "counter", or None if not found/expired)
+    pub fn get_type(&self, key: &str) -> Option<&'static str> {
+        self.entries.get(key).and_then(|entry| {
+            if Self::is_entry_expired(entry.value()) {
+                None
+            } else {
+                match entry.value() {
+                    ValueType::Counter(_) => Some("counter"),
+                    ValueType::String(_) => Some("string"),
+                }
+            }
+        })
+    }
+
+    /// Check if a key exists (and is not expired)
+    pub fn exists(&self, key: &str) -> bool {
+        self.entries
+            .get(key)
+            .map(|entry| !Self::is_entry_expired(entry.value()))
+            .unwrap_or(false)
+    }
+
     /// Get multiple counter values.
     /// Returns values in the same order as requested keys.
-    /// Non-existent or expired keys return 0.
-    pub fn mget(&self, keys: &[String]) -> Vec<u64> {
-        keys.iter()
-            .map(|key| self.get(key))
-            .collect()
+    /// Non-existent, expired, or string keys return 0.
+    pub fn mget(&self, keys: &[String]) -> Vec<i64> {
+        keys.iter().map(|key| self.get(key)).collect()
     }
 
     /// Apply a delta from replication.
     /// Returns true if the state changed (delta was newer or expiration extended).
-    ///
-    /// This operation is idempotent: applying the same delta multiple
-    /// times has no effect after the first application.
-    /// TTL merge uses MAX semantics: the later expiration always wins.
     pub fn apply_delta(&self, delta: &Delta) -> bool {
-        let mut entry = self.counters.entry(delta.key.clone()).or_default();
-        let counter_entry = entry.value_mut();
+        match delta.delta_type {
+            DeltaType::P | DeltaType::N => self.apply_counter_delta(delta),
+            DeltaType::S => self.apply_string_delta(delta),
+        }
+    }
 
-        // Apply counter component (existing CRDT logic)
-        let counter_changed = counter_entry.counter.apply_delta(&delta.origin_replica_id, delta.component_value);
+    /// Apply a counter (P or N) delta
+    fn apply_counter_delta(&self, delta: &Delta) -> bool {
+        let mut entry = self.entries.entry(delta.key.clone()).or_default();
 
-        // Apply expiration with MAX semantics (always take the later expiration)
-        let expiry_changed = match (counter_entry.expires_at_ms, delta.expires_at_ms) {
+        match entry.value_mut() {
+            ValueType::Counter(counter_entry) => {
+                // Apply counter component based on delta type
+                let counter_changed = match delta.delta_type {
+                    DeltaType::P => counter_entry
+                        .counter
+                        .apply_p_delta(&delta.origin_replica_id, delta.component_value),
+                    DeltaType::N => counter_entry
+                        .counter
+                        .apply_n_delta(&delta.origin_replica_id, delta.component_value),
+                    DeltaType::S => false, // Should not happen
+                };
+
+                // Apply expiration with MAX semantics
+                let expiry_changed =
+                    Self::merge_expiration(&mut counter_entry.expires_at_ms, delta.expires_at_ms);
+
+                counter_changed || expiry_changed
+            }
+            ValueType::String(_) => false, // Type mismatch, ignore
+        }
+    }
+
+    /// Apply a string (S) delta
+    fn apply_string_delta(&self, delta: &Delta) -> bool {
+        let timestamp = delta.timestamp_ms.unwrap_or(0);
+        let value = delta.string_value.clone().unwrap_or_default();
+
+        let mut entry = self
+            .entries
+            .entry(delta.key.clone())
+            .or_insert_with(|| ValueType::String(StringEntry::new(LWWRegister::default())));
+
+        match entry.value_mut() {
+            ValueType::String(string_entry) => {
+                let register_changed =
+                    string_entry
+                        .register
+                        .update(value, timestamp, delta.origin_replica_id.clone());
+
+                let expiry_changed =
+                    Self::merge_expiration(&mut string_entry.expires_at_ms, delta.expires_at_ms);
+
+                register_changed || expiry_changed
+            }
+            ValueType::Counter(_) => false, // Type mismatch, ignore
+        }
+    }
+
+    /// Merge expiration timestamps using MAX semantics
+    fn merge_expiration(current: &mut Option<u64>, incoming: Option<u64>) -> bool {
+        match (*current, incoming) {
             (None, Some(t)) => {
-                counter_entry.expires_at_ms = Some(t);
+                *current = Some(t);
                 true
             }
             (Some(a), Some(b)) if b > a => {
-                counter_entry.expires_at_ms = Some(b);
+                *current = Some(b);
                 true
             }
             _ => false,
-        };
-
-        counter_changed || expiry_changed
+        }
     }
 
     /// Apply multiple deltas from replication.
@@ -177,20 +392,45 @@ impl CounterStore {
     pub fn all_deltas(&self) -> Vec<Delta> {
         let mut deltas = Vec::new();
 
-        for entry in self.counters.iter() {
-            let counter_entry = entry.value();
-            // Skip expired entries
-            if Self::is_expired(counter_entry) {
+        for entry in self.entries.iter() {
+            if Self::is_entry_expired(entry.value()) {
                 continue;
             }
+
             let key = entry.key();
-            for (replica_id, &value) in counter_entry.counter.components() {
-                deltas.push(Delta::with_expiration(
-                    key.clone(),
-                    replica_id.clone(),
-                    value,
-                    counter_entry.expires_at_ms,
-                ));
+
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    // P deltas
+                    for (replica_id, &value) in counter_entry.counter.p_components() {
+                        deltas.push(Delta::with_type_and_expiration(
+                            key.clone(),
+                            replica_id.clone(),
+                            value,
+                            DeltaType::P,
+                            counter_entry.expires_at_ms,
+                        ));
+                    }
+                    // N deltas
+                    for (replica_id, &value) in counter_entry.counter.n_components() {
+                        deltas.push(Delta::with_type_and_expiration(
+                            key.clone(),
+                            replica_id.clone(),
+                            value,
+                            DeltaType::N,
+                            counter_entry.expires_at_ms,
+                        ));
+                    }
+                }
+                ValueType::String(string_entry) => {
+                    deltas.push(Delta::string(
+                        key.clone(),
+                        string_entry.register.origin_replica().clone(),
+                        string_entry.register.value().to_string(),
+                        string_entry.register.timestamp_ms(),
+                        string_entry.expires_at_ms,
+                    ));
+                }
             }
         }
 
@@ -199,19 +439,19 @@ impl CounterStore {
 
     /// Get the number of keys in the store (includes expired keys not yet cleaned up)
     pub fn key_count(&self) -> usize {
-        self.counters.len()
+        self.entries.len()
     }
 
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
-        self.counters.is_empty()
+        self.entries.is_empty()
     }
 
     /// Get all keys (for debugging/admin purposes, excludes expired keys)
     pub fn keys(&self) -> Vec<Key> {
-        self.counters
+        self.entries
             .iter()
-            .filter(|entry| !Self::is_expired(entry.value()))
+            .filter(|entry| !Self::is_entry_expired(entry.value()))
             .map(|entry| entry.key().clone())
             .collect()
     }
@@ -221,8 +461,8 @@ impl CounterStore {
     /// Set expiration time using absolute Unix timestamp in milliseconds.
     /// Returns true if the key exists and expiration was set.
     pub fn expire_at(&self, key: &str, expires_at_ms: u64) -> bool {
-        if let Some(mut entry) = self.counters.get_mut(key) {
-            entry.value_mut().expires_at_ms = Some(expires_at_ms);
+        if let Some(mut entry) = self.entries.get_mut(key) {
+            entry.value_mut().set_expires_at_ms(Some(expires_at_ms));
             true
         } else {
             false
@@ -239,9 +479,9 @@ impl CounterStore {
     /// Remove expiration from a key (make it persistent).
     /// Returns true if the key exists and had an expiration that was removed.
     pub fn persist(&self, key: &str) -> bool {
-        if let Some(mut entry) = self.counters.get_mut(key) {
-            if entry.value().expires_at_ms.is_some() {
-                entry.value_mut().expires_at_ms = None;
+        if let Some(mut entry) = self.entries.get_mut(key) {
+            if entry.value().expires_at_ms().is_some() {
+                entry.value_mut().set_expires_at_ms(None);
                 return true;
             }
         }
@@ -251,13 +491,12 @@ impl CounterStore {
     /// Get remaining TTL in milliseconds.
     /// Returns: remaining ms (positive), -1 (no TTL), or -2 (key not found/expired)
     pub fn pttl(&self, key: &str) -> i64 {
-        match self.counters.get(key) {
+        match self.entries.get(key) {
             Some(entry) => {
-                let counter_entry = entry.value();
-                if Self::is_expired(counter_entry) {
+                if Self::is_entry_expired(entry.value()) {
                     -2 // Expired, treat as not found
                 } else {
-                    match counter_entry.expires_at_ms {
+                    match entry.value().expires_at_ms() {
                         Some(exp) => {
                             let now = current_time_ms();
                             if exp > now {
@@ -295,11 +534,11 @@ impl CounterStore {
         let mut keys_to_remove = Vec::with_capacity(batch_size);
 
         // Collect keys to remove (can't remove while iterating)
-        for entry in self.counters.iter() {
+        for entry in self.entries.iter() {
             if keys_to_remove.len() >= batch_size {
                 break;
             }
-            if let Some(exp) = entry.value().expires_at_ms {
+            if let Some(exp) = entry.value().expires_at_ms() {
                 // Only remove if expired AND past grace period
                 if exp <= threshold {
                     keys_to_remove.push(entry.key().clone());
@@ -309,7 +548,7 @@ impl CounterStore {
 
         // Remove collected keys
         for key in keys_to_remove {
-            if self.counters.remove(&key).is_some() {
+            if self.entries.remove(&key).is_some() {
                 removed += 1;
             }
         }
@@ -321,24 +560,63 @@ impl CounterStore {
     /// Excludes expired keys from the snapshot.
     pub fn export_snapshot(&self) -> Snapshot {
         let mut snapshot_counters = HashMap::new();
+        let mut snapshot_decrements = HashMap::new();
+        let mut snapshot_strings = HashMap::new();
         let mut expirations = HashMap::new();
 
-        for entry in self.counters.iter() {
-            let counter_entry = entry.value();
-            // Skip expired entries
-            if Self::is_expired(counter_entry) {
+        for entry in self.entries.iter() {
+            if Self::is_entry_expired(entry.value()) {
                 continue;
             }
-            let key = entry.key();
-            snapshot_counters.insert(key.to_string(), Snapshot::gcounter_to_map(&counter_entry.counter));
-            if let Some(exp) = counter_entry.expires_at_ms {
-                expirations.insert(key.to_string(), exp);
+            let key = entry.key().to_string();
+
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    // P components
+                    let p_map: HashMap<String, u64> = counter_entry
+                        .counter
+                        .p_components()
+                        .map(|(r, v)| (r.to_string(), *v))
+                        .collect();
+                    if !p_map.is_empty() {
+                        snapshot_counters.insert(key.clone(), p_map);
+                    }
+
+                    // N components
+                    let n_map: HashMap<String, u64> = counter_entry
+                        .counter
+                        .n_components()
+                        .map(|(r, v)| (r.to_string(), *v))
+                        .collect();
+                    if !n_map.is_empty() {
+                        snapshot_decrements.insert(key.clone(), n_map);
+                    }
+
+                    if let Some(exp) = counter_entry.expires_at_ms {
+                        expirations.insert(key, exp);
+                    }
+                }
+                ValueType::String(string_entry) => {
+                    snapshot_strings.insert(
+                        key.clone(),
+                        crate::snapshot::StringSnapshot {
+                            value: string_entry.register.value().to_string(),
+                            timestamp_ms: string_entry.register.timestamp_ms(),
+                            origin_replica: string_entry.register.origin_replica().to_string(),
+                        },
+                    );
+                    if let Some(exp) = string_entry.expires_at_ms {
+                        expirations.insert(key, exp);
+                    }
+                }
             }
         }
 
-        Snapshot::from_counters_with_expirations(
+        Snapshot::from_full(
             self.local_replica_id.to_string(),
             snapshot_counters,
+            snapshot_decrements,
+            snapshot_strings,
             expirations,
         )
     }
@@ -347,23 +625,57 @@ impl CounterStore {
     /// Uses CRDT merge semantics (max per component), so this is idempotent.
     /// TTL uses MAX semantics (extends, never shortens).
     pub fn import_snapshot(&self, snapshot: &Snapshot) {
+        // Import counters (P components)
         for (key, components) in &snapshot.counters {
             let key_arc: Key = Arc::from(key.as_str());
-            let mut entry = self.counters.entry(key_arc).or_default();
-            let counter_entry = entry.value_mut();
+            let mut entry = self.entries.entry(key_arc.clone()).or_default();
 
-            // Apply each component using CRDT merge (max)
-            for (replica_id, &value) in components {
-                let replica_id: ReplicaId = Arc::from(replica_id.as_str());
-                counter_entry.counter.apply_delta(&replica_id, value);
+            if let ValueType::Counter(counter_entry) = entry.value_mut() {
+                for (replica_id, &value) in components {
+                    let replica_id: ReplicaId = Arc::from(replica_id.as_str());
+                    counter_entry.counter.apply_p_delta(&replica_id, value);
+                }
+
+                // Apply expiration with MAX semantics
+                if let Some(&exp) = snapshot.expirations.get(key) {
+                    Self::merge_expiration(&mut counter_entry.expires_at_ms, Some(exp));
+                }
             }
+        }
 
-            // Apply expiration with MAX semantics
-            if let Some(&exp) = snapshot.expirations.get(key) {
-                match counter_entry.expires_at_ms {
-                    None => counter_entry.expires_at_ms = Some(exp),
-                    Some(existing) if exp > existing => counter_entry.expires_at_ms = Some(exp),
-                    _ => {}
+        // Import decrements (N components)
+        for (key, components) in &snapshot.decrements {
+            let key_arc: Key = Arc::from(key.as_str());
+            let mut entry = self.entries.entry(key_arc.clone()).or_default();
+
+            if let ValueType::Counter(counter_entry) = entry.value_mut() {
+                for (replica_id, &value) in components {
+                    let replica_id: ReplicaId = Arc::from(replica_id.as_str());
+                    counter_entry.counter.apply_n_delta(&replica_id, value);
+                }
+            }
+        }
+
+        // Import strings
+        for (key, string_snapshot) in &snapshot.strings {
+            let key_arc: Key = Arc::from(key.as_str());
+            let replica: ReplicaId = Arc::from(string_snapshot.origin_replica.as_str());
+            let register = LWWRegister::new(
+                string_snapshot.value.clone(),
+                string_snapshot.timestamp_ms,
+                replica,
+            );
+
+            let mut entry = self
+                .entries
+                .entry(key_arc)
+                .or_insert_with(|| ValueType::String(StringEntry::new(LWWRegister::default())));
+
+            if let ValueType::String(string_entry) = entry.value_mut() {
+                string_entry.register.merge(&register);
+
+                if let Some(&exp) = snapshot.expirations.get(key) {
+                    Self::merge_expiration(&mut string_entry.expires_at_ms, Some(exp));
                 }
             }
         }
@@ -390,23 +702,101 @@ mod tests {
         let store = CounterStore::from_str("r1");
         let k = key("counter:foo");
 
-        let (value, delta) = store.increment(&k, 5);
+        let (value, delta) = store.increment(&k, 5).unwrap();
         assert_eq!(value, 5);
         assert_eq!(delta.key.as_ref(), "counter:foo");
         assert_eq!(delta.origin_replica_id.as_ref(), "r1");
         assert_eq!(delta.component_value, 5);
+        assert_eq!(delta.delta_type, DeltaType::P);
 
         assert_eq!(store.get("counter:foo"), 5);
 
-        let (value, delta) = store.increment(&k, 3);
+        let (value, delta) = store.increment(&k, 3).unwrap();
         assert_eq!(value, 8);
         assert_eq!(delta.component_value, 8);
+    }
+
+    #[test]
+    fn test_decrement_and_get() {
+        let store = CounterStore::from_str("r1");
+        let k = key("counter:foo");
+
+        // Increment first
+        store.increment(&k, 10).unwrap();
+        assert_eq!(store.get("counter:foo"), 10);
+
+        // Decrement
+        let (value, delta) = store.decrement(&k, 3).unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(delta.delta_type, DeltaType::N);
+        assert_eq!(delta.component_value, 3);
+
+        assert_eq!(store.get("counter:foo"), 7);
+    }
+
+    #[test]
+    fn test_decrement_below_zero() {
+        let store = CounterStore::from_str("r1");
+        let k = key("counter:foo");
+
+        store.increment(&k, 5).unwrap();
+        store.decrement(&k, 10).unwrap();
+
+        // Value can go negative
+        assert_eq!(store.get("counter:foo"), -5);
+    }
+
+    #[test]
+    fn test_string_set_and_get() {
+        let store = CounterStore::from_str("r1");
+
+        let delta = store.set_string_str("mykey", "hello".to_string()).unwrap();
+        assert_eq!(delta.delta_type, DeltaType::S);
+        assert_eq!(delta.string_value, Some("hello".to_string()));
+
+        assert_eq!(store.get_string("mykey"), Some("hello".to_string()));
+        assert_eq!(store.get_type("mykey"), Some("string"));
+    }
+
+    #[test]
+    fn test_type_mismatch_counter_to_string() {
+        let store = CounterStore::from_str("r1");
+        let k = key("mykey");
+
+        // Set as counter
+        store.increment(&k, 10).unwrap();
+        assert_eq!(store.get_type("mykey"), Some("counter"));
+
+        // Try to set as string - should fail
+        assert!(store.set_string(&k, "hello".to_string()).is_none());
+
+        // Counter should still work
+        assert_eq!(store.get("mykey"), 10);
+    }
+
+    #[test]
+    fn test_type_mismatch_string_to_counter() {
+        let store = CounterStore::from_str("r1");
+        let k = key("mykey");
+
+        // Set as string
+        store.set_string(&k, "hello".to_string()).unwrap();
+        assert_eq!(store.get_type("mykey"), Some("string"));
+
+        // Try to increment - should fail
+        assert!(store.increment(&k, 10).is_none());
+        assert!(store.decrement(&k, 5).is_none());
+
+        // String should still work
+        assert_eq!(store.get_string("mykey"), Some("hello".to_string()));
     }
 
     #[test]
     fn test_get_nonexistent_key() {
         let store = CounterStore::from_str("r1");
         assert_eq!(store.get("nonexistent"), 0);
+        assert_eq!(store.get_string("nonexistent"), None);
+        assert_eq!(store.get_type("nonexistent"), None);
     }
 
     #[test]
@@ -425,7 +815,7 @@ mod tests {
     fn test_apply_delta() {
         let store = CounterStore::from_str("r1");
 
-        // Apply delta from another replica
+        // Apply P delta from another replica
         let delta = Delta::from_strs("counter:foo", "r2", 100);
         assert!(store.apply_delta(&delta));
         assert_eq!(store.get("counter:foo"), 100);
@@ -443,6 +833,37 @@ mod tests {
         let higher_delta = Delta::from_strs("counter:foo", "r2", 150);
         assert!(store.apply_delta(&higher_delta));
         assert_eq!(store.get("counter:foo"), 150);
+    }
+
+    #[test]
+    fn test_apply_n_delta() {
+        let store = CounterStore::from_str("r1");
+
+        // First increment
+        store.increment_str("k1", 100);
+
+        // Apply N delta from another replica
+        let delta = Delta::with_type(key("k1"), Arc::from("r2"), 30, DeltaType::N);
+        assert!(store.apply_delta(&delta));
+
+        // Value = 100 - 30 = 70
+        assert_eq!(store.get("k1"), 70);
+    }
+
+    #[test]
+    fn test_apply_string_delta() {
+        let store = CounterStore::from_str("r1");
+
+        let delta = Delta::string(
+            key("mykey"),
+            Arc::from("r2"),
+            "hello from r2".to_string(),
+            1000,
+            None,
+        );
+
+        assert!(store.apply_delta(&delta));
+        assert_eq!(store.get_string("mykey"), Some("hello from r2".to_string()));
     }
 
     #[test]
@@ -474,8 +895,8 @@ mod tests {
 
         // Both replicas increment the same key
         let k = key("shared");
-        let (_, delta1) = store1.increment(&k, 10);
-        let (_, delta2) = store2.increment(&k, 7);
+        let (_, delta1) = store1.increment(&k, 10).unwrap();
+        let (_, delta2) = store2.increment(&k, 7).unwrap();
 
         // Exchange deltas
         store1.apply_delta(&delta2);
@@ -487,10 +908,30 @@ mod tests {
     }
 
     #[test]
+    fn test_convergence_with_decrement() {
+        let store1 = CounterStore::from_str("r1");
+        let store2 = CounterStore::from_str("r2");
+
+        let k = key("shared");
+
+        // r1 increments, r2 decrements
+        let (_, delta1) = store1.increment(&k, 10).unwrap();
+        store2.apply_delta(&delta1); // r2 sees increment first
+
+        let (_, delta2) = store2.decrement(&k, 3).unwrap();
+        store1.apply_delta(&delta2);
+
+        // Both should see 10 - 3 = 7
+        assert_eq!(store1.get("shared"), 7);
+        assert_eq!(store2.get("shared"), 7);
+    }
+
+    #[test]
     fn test_all_deltas() {
         let store = CounterStore::from_str("r1");
 
         store.increment_str("k1", 10);
+        store.decrement_str("k1", 3);
         store.increment_str("k2", 20);
 
         // Apply delta from another replica
@@ -498,8 +939,8 @@ mod tests {
 
         let deltas = store.all_deltas();
 
-        // Should have 3 deltas: k1/r1, k1/r2, k2/r1
-        assert_eq!(deltas.len(), 3);
+        // Should have: k1/r1/P, k1/r1/N, k1/r2/P, k2/r1/P
+        assert_eq!(deltas.len(), 4);
     }
 
     #[test]
@@ -518,6 +959,19 @@ mod tests {
         let mut keys: Vec<String> = store.keys().iter().map(|k| k.to_string()).collect();
         keys.sort();
         assert_eq!(keys, vec!["k1", "k2", "k3"]);
+    }
+
+    #[test]
+    fn test_exists() {
+        let store = CounterStore::from_str("r1");
+
+        assert!(!store.exists("k1"));
+
+        store.increment_str("k1", 1);
+        assert!(store.exists("k1"));
+
+        store.set_string_str("k2", "hello".to_string());
+        assert!(store.exists("k2"));
     }
 
     #[test]
@@ -584,6 +1038,7 @@ mod tests {
         let store = CounterStore::from_str("r1");
 
         store.increment_str("k1", 10);
+        store.decrement_str("k1", 3);
         store.increment_str("k2", 20);
         store.apply_delta(&Delta::from_strs("k1", "r2", 5));
 
@@ -595,6 +1050,9 @@ mod tests {
         let k1 = snapshot.counters.get("k1").unwrap();
         assert_eq!(k1.get("r1"), Some(&10));
         assert_eq!(k1.get("r2"), Some(&5));
+
+        let k1_dec = snapshot.decrements.get("k1").unwrap();
+        assert_eq!(k1_dec.get("r1"), Some(&3));
 
         let k2 = snapshot.counters.get("k2").unwrap();
         assert_eq!(k2.get("r1"), Some(&20));
@@ -649,6 +1107,7 @@ mod tests {
 
         store1.increment_str("counter:a", 100);
         store1.increment_str("counter:b", 200);
+        store1.decrement_str("counter:a", 20);
         store1.apply_delta(&Delta::from_strs("counter:a", "r2", 50));
 
         // Export

@@ -6,7 +6,19 @@ use std::sync::Arc;
 
 /// Current snapshot format version
 /// Version 2: Added expirations field for TTL support
-pub const SNAPSHOT_VERSION: u32 = 2;
+/// Version 3: Added decrements (N components) and strings (LWW-Register)
+pub const SNAPSHOT_VERSION: u32 = 3;
+
+/// Snapshot of a string value (LWW-Register)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StringSnapshot {
+    /// The string value
+    pub value: String,
+    /// Timestamp when the value was set (milliseconds since epoch)
+    pub timestamp_ms: u64,
+    /// Replica that set the value
+    pub origin_replica: String,
+}
 
 /// A point-in-time snapshot of the counter store state.
 /// Used for persistence and recovery.
@@ -21,8 +33,15 @@ pub struct Snapshot {
     pub replica_id: String,
     /// When the snapshot was taken (ISO 8601)
     pub timestamp: DateTime<Utc>,
-    /// All counters: key -> (replica_id -> component_value)
+    /// All counters (P components): key -> (replica_id -> component_value)
     pub counters: HashMap<String, HashMap<String, u64>>,
+    /// Decrements (N components): key -> (replica_id -> component_value)
+    /// Only present for keys with decrement operations.
+    #[serde(default)]
+    pub decrements: HashMap<String, HashMap<String, u64>>,
+    /// String values (LWW-Register): key -> StringSnapshot
+    #[serde(default)]
+    pub strings: HashMap<String, StringSnapshot>,
     /// Key expirations: key -> expiration timestamp in ms since Unix epoch
     /// Only present for keys that have TTL set. Absent keys never expire.
     #[serde(default)]
@@ -37,6 +56,8 @@ impl Snapshot {
             replica_id,
             timestamp: Utc::now(),
             counters: HashMap::new(),
+            decrements: HashMap::new(),
+            strings: HashMap::new(),
             expirations: HashMap::new(),
         }
     }
@@ -51,6 +72,8 @@ impl Snapshot {
             replica_id,
             timestamp: Utc::now(),
             counters,
+            decrements: HashMap::new(),
+            strings: HashMap::new(),
             expirations: HashMap::new(),
         }
     }
@@ -66,6 +89,27 @@ impl Snapshot {
             replica_id,
             timestamp: Utc::now(),
             counters,
+            decrements: HashMap::new(),
+            strings: HashMap::new(),
+            expirations,
+        }
+    }
+
+    /// Create a full snapshot with counters, decrements, strings, and expirations
+    pub fn from_full(
+        replica_id: String,
+        counters: HashMap<String, HashMap<String, u64>>,
+        decrements: HashMap<String, HashMap<String, u64>>,
+        strings: HashMap<String, StringSnapshot>,
+        expirations: HashMap<String, u64>,
+    ) -> Self {
+        Self {
+            version: SNAPSHOT_VERSION,
+            replica_id,
+            timestamp: Utc::now(),
+            counters,
+            decrements,
+            strings,
             expirations,
         }
     }
@@ -107,14 +151,14 @@ impl Snapshot {
         Ok(())
     }
 
-    /// Get the number of keys in this snapshot
+    /// Get the number of keys in this snapshot (counters + strings)
     pub fn key_count(&self) -> usize {
-        self.counters.len()
+        self.counters.len() + self.strings.len()
     }
 
     /// Check if the snapshot is empty
     pub fn is_empty(&self) -> bool {
-        self.counters.is_empty()
+        self.counters.is_empty() && self.strings.is_empty()
     }
 
     /// Convert a GCounter to the snapshot format (String-based HashMap)

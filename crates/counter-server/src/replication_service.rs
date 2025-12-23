@@ -1,7 +1,7 @@
-use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor};
+use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use counter_proto::replication::v1::{
     replication_service_server::ReplicationService, Ack, AntiEntropyRequest, Delta, DeltaBatch,
-    Handshake, ReplicationMessage, replication_message::Message,
+    DeltaType, Handshake, ReplicationMessage, replication_message::Message,
 };
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,6 +30,24 @@ impl ReplicationServiceImpl {
         }
     }
 
+    /// Convert core DeltaType to proto DeltaType
+    fn to_proto_delta_type(dt: CoreDeltaType) -> i32 {
+        match dt {
+            CoreDeltaType::P => DeltaType::P as i32,
+            CoreDeltaType::N => DeltaType::N as i32,
+            CoreDeltaType::S => DeltaType::S as i32,
+        }
+    }
+
+    /// Convert proto DeltaType to core DeltaType
+    fn from_proto_delta_type(dt: i32) -> CoreDeltaType {
+        match DeltaType::try_from(dt) {
+            Ok(DeltaType::N) => CoreDeltaType::N,
+            Ok(DeltaType::S) => CoreDeltaType::S,
+            _ => CoreDeltaType::P, // Default to P for backwards compatibility
+        }
+    }
+
     /// Convert core Delta to proto Delta
     fn to_proto_delta(delta: &CoreDelta) -> Delta {
         Delta {
@@ -37,17 +55,32 @@ impl ReplicationServiceImpl {
             origin_replica_id: delta.origin_replica_id.to_string(),
             component_value: delta.component_value,
             expires_at_ms: delta.expires_at_ms,
+            delta_type: Self::to_proto_delta_type(delta.delta_type),
+            string_value: delta.string_value.clone(),
+            timestamp_ms: delta.timestamp_ms,
         }
     }
 
     /// Convert proto Delta to core Delta
     fn from_proto_delta(delta: &Delta) -> CoreDelta {
-        CoreDelta::from_strs_with_expiration(
-            &delta.key,
-            &delta.origin_replica_id,
-            delta.component_value,
-            delta.expires_at_ms,
-        )
+        let delta_type = Self::from_proto_delta_type(delta.delta_type);
+
+        match delta_type {
+            CoreDeltaType::S => CoreDelta::string(
+                delta.key.as_str().into(),
+                delta.origin_replica_id.as_str().into(),
+                delta.string_value.clone().unwrap_or_default(),
+                delta.timestamp_ms.unwrap_or(0),
+                delta.expires_at_ms,
+            ),
+            _ => CoreDelta::with_type_and_expiration(
+                delta.key.as_str().into(),
+                delta.origin_replica_id.as_str().into(),
+                delta.component_value,
+                delta_type,
+                delta.expires_at_ms,
+            ),
+        }
     }
 }
 
@@ -264,17 +297,54 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_delta_conversion() {
+    fn test_delta_conversion_p() {
         let core_delta = CoreDelta::new("key1".into(), "r1".into(), 100);
         let proto_delta = ReplicationServiceImpl::to_proto_delta(&core_delta);
 
         assert_eq!(proto_delta.key, "key1");
         assert_eq!(proto_delta.origin_replica_id, "r1");
         assert_eq!(proto_delta.component_value, 100);
+        assert_eq!(proto_delta.delta_type, DeltaType::P as i32);
 
         let back = ReplicationServiceImpl::from_proto_delta(&proto_delta);
         assert_eq!(back.key, core_delta.key);
         assert_eq!(back.origin_replica_id, core_delta.origin_replica_id);
         assert_eq!(back.component_value, core_delta.component_value);
+        assert_eq!(back.delta_type, CoreDeltaType::P);
+    }
+
+    #[test]
+    fn test_delta_conversion_n() {
+        let core_delta = CoreDelta::with_type("key1".into(), "r1".into(), 50, CoreDeltaType::N);
+        let proto_delta = ReplicationServiceImpl::to_proto_delta(&core_delta);
+
+        assert_eq!(proto_delta.delta_type, DeltaType::N as i32);
+        assert_eq!(proto_delta.component_value, 50);
+
+        let back = ReplicationServiceImpl::from_proto_delta(&proto_delta);
+        assert_eq!(back.delta_type, CoreDeltaType::N);
+        assert_eq!(back.component_value, 50);
+    }
+
+    #[test]
+    fn test_delta_conversion_string() {
+        let core_delta = CoreDelta::string(
+            "mykey".into(),
+            "r1".into(),
+            "hello world".to_string(),
+            1234567890,
+            None,
+        );
+        let proto_delta = ReplicationServiceImpl::to_proto_delta(&core_delta);
+
+        assert_eq!(proto_delta.key, "mykey");
+        assert_eq!(proto_delta.delta_type, DeltaType::S as i32);
+        assert_eq!(proto_delta.string_value, Some("hello world".to_string()));
+        assert_eq!(proto_delta.timestamp_ms, Some(1234567890));
+
+        let back = ReplicationServiceImpl::from_proto_delta(&proto_delta);
+        assert_eq!(back.delta_type, CoreDeltaType::S);
+        assert_eq!(back.string_value, Some("hello world".to_string()));
+        assert_eq!(back.timestamp_ms, Some(1234567890));
     }
 }

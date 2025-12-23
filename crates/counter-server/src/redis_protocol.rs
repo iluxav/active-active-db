@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 /// Redis-compatible protocol server
-/// Supports: INCRBY, GET, MGET, PING, QUIT
+/// Supports: INCR, INCRBY, DECR, DECRBY, GET, SET, MGET, PING, QUIT, TTL, EXPIRE, and more
 pub struct RedisServer {
     store: Arc<CounterStore>,
     delta_tx: mpsc::Sender<Delta>,
@@ -186,14 +186,20 @@ fn execute_command(
             };
 
             if amount < 0 {
-                response.push_str("-ERR INCRBY only supports positive values (G-Counter)\r\n");
+                // Use DECRBY for negative values
+                response.push_str("-ERR INCRBY only supports positive values, use DECRBY for decrement\r\n");
                 return;
             }
 
-            let (value, delta) = store.increment_str(key, amount as u64);
-            let _ = delta_tx.try_send(delta);
-
-            let _ = write!(response, ":{}\r\n", value);
+            match store.increment_str(key, amount as u64) {
+                Some((value, delta)) => {
+                    let _ = delta_tx.try_send(delta);
+                    let _ = write!(response, ":{}\r\n", value);
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
         }
 
         "INCR" => {
@@ -202,10 +208,62 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            let (value, delta) = store.increment_str(key, 1);
-            let _ = delta_tx.try_send(delta);
+            match store.increment_str(key, 1) {
+                Some((value, delta)) => {
+                    let _ = delta_tx.try_send(delta);
+                    let _ = write!(response, ":{}\r\n", value);
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
+        }
 
-            let _ = write!(response, ":{}\r\n", value);
+        "DECRBY" => {
+            if args.len() < 3 {
+                response.push_str("-ERR wrong number of arguments for 'decrby' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            let amount: i64 = match args[2].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    response.push_str("-ERR value is not an integer or out of range\r\n");
+                    return;
+                }
+            };
+
+            if amount < 0 {
+                response.push_str("-ERR DECRBY only supports positive values, use INCRBY for increment\r\n");
+                return;
+            }
+
+            match store.decrement_str(key, amount as u64) {
+                Some((value, delta)) => {
+                    let _ = delta_tx.try_send(delta);
+                    let _ = write!(response, ":{}\r\n", value);
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
+        }
+
+        "DECR" => {
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'decr' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            match store.decrement_str(key, 1) {
+                Some((value, delta)) => {
+                    let _ = delta_tx.try_send(delta);
+                    let _ = write!(response, ":{}\r\n", value);
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
         }
 
         "GET" => {
@@ -214,9 +272,22 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            let value = store.get(key);
-            // Fast path: format integer directly
-            let _ = write!(response, ":{}\r\n", value);
+
+            // Check if it's a string first
+            if let Some(value) = store.get_string(key) {
+                let _ = write!(response, "${}\r\n{}\r\n", value.len(), value);
+            } else {
+                // It's either a counter or doesn't exist
+                let value = store.get(key);
+                if value != 0 || store.exists(key) {
+                    // Return counter value as string (Redis-compatible)
+                    let value_str = value.to_string();
+                    let _ = write!(response, "${}\r\n{}\r\n", value_str.len(), value_str);
+                } else {
+                    // Key doesn't exist
+                    response.push_str("$-1\r\n");
+                }
+            }
         }
 
         "MGET" => {
@@ -234,15 +305,74 @@ fn execute_command(
         }
 
         "SET" => {
-            response.push_str("-ERR SET not supported, use INCRBY for counters\r\n");
+            if args.len() < 3 {
+                response.push_str("-ERR wrong number of arguments for 'set' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            let value = &args[2];
+
+            match store.set_string_str(key, value.clone()) {
+                Some(delta) => {
+                    let _ = delta_tx.try_send(delta);
+                    response.push_str("+OK\r\n");
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
+        }
+
+        "SETNX" => {
+            if args.len() < 3 {
+                response.push_str("-ERR wrong number of arguments for 'setnx' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            let value = &args[2];
+
+            // Only set if key doesn't exist
+            if !store.exists(key) {
+                match store.set_string_str(key, value.clone()) {
+                    Some(delta) => {
+                        let _ = delta_tx.try_send(delta);
+                        response.push_str(":1\r\n");
+                    }
+                    None => {
+                        response.push_str(":0\r\n");
+                    }
+                }
+            } else {
+                response.push_str(":0\r\n");
+            }
+        }
+
+        "APPEND" => {
+            if args.len() < 3 {
+                response.push_str("-ERR wrong number of arguments for 'append' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            let append_value = &args[2];
+
+            // Get existing string or start with empty
+            let existing = store.get_string(key).unwrap_or_default();
+            let new_value = format!("{}{}", existing, append_value);
+            let new_len = new_value.len();
+
+            match store.set_string_str(key, new_value) {
+                Some(delta) => {
+                    let _ = delta_tx.try_send(delta);
+                    let _ = write!(response, ":{}\r\n", new_len);
+                }
+                None => {
+                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                }
+            }
         }
 
         "DEL" | "DELETE" => {
-            response.push_str("-ERR DELETE not supported (G-Counter is grow-only)\r\n");
-        }
-
-        "DECR" | "DECRBY" => {
-            response.push_str("-ERR DECR not supported (G-Counter is grow-only)\r\n");
+            response.push_str("-ERR DELETE not supported (CRDT is grow-only)\r\n");
         }
 
         "INFO" => {
@@ -305,16 +435,11 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            let value = store.get(key);
-            if value > 0 {
-                response.push_str("+string\r\n");
-            } else {
-                let keys = store.keys();
-                if keys.iter().any(|k| k.as_ref() == key.as_str()) {
-                    response.push_str("+string\r\n");
-                } else {
-                    response.push_str("+none\r\n");
-                }
+            match store.get_type(key) {
+                Some("counter") => response.push_str("+string\r\n"), // Redis reports counters as strings
+                Some("string") => response.push_str("+string\r\n"),
+                Some(_) => response.push_str("+string\r\n"),
+                None => response.push_str("+none\r\n"),
             }
         }
 
@@ -435,9 +560,19 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            let value = store.get(key);
-            let len = value.to_string().len();
-            let _ = write!(response, ":{}\r\n", len);
+            // Check for string first
+            if let Some(value) = store.get_string(key) {
+                let _ = write!(response, ":{}\r\n", value.len());
+            } else {
+                // It's either a counter or doesn't exist
+                let value = store.get(key);
+                if value != 0 || store.exists(key) {
+                    let len = value.to_string().len();
+                    let _ = write!(response, ":{}\r\n", len);
+                } else {
+                    response.push_str(":0\r\n");
+                }
+            }
         }
 
         "ECHO" => {

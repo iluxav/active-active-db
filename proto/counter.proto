@@ -22,8 +22,20 @@ message IncrByRequest {
 }
 
 message IncrByResponse {
-  // The new total value after increment
-  uint64 value = 1;
+  // The new total value after increment (can be negative with PN-Counter)
+  int64 value = 1;
+}
+
+message DecrByRequest {
+  // The counter key
+  string key = 1;
+  // Amount to decrement (must be positive)
+  uint64 amount = 2;
+}
+
+message DecrByResponse {
+  // The new total value after decrement (can be negative)
+  int64 value = 1;
 }
 
 message GetRequest {
@@ -32,8 +44,8 @@ message GetRequest {
 }
 
 message GetResponse {
-  // The current counter value (0 if key doesn't exist)
-  uint64 value = 1;
+  // The current counter value (0 if key doesn't exist, can be negative)
+  int64 value = 1;
 }
 
 message MGetRequest {
@@ -44,5 +56,5 @@ message MGetRequest {
 message MGetResponse {
   // Values in the same order as requested keys
   // Non-existent keys return 0
-  repeated uint64 values = 1;
+  repeated int64 values = 1;
 }
