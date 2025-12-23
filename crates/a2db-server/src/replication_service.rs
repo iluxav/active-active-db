@@ -227,6 +227,7 @@ impl ReplicationService for ReplicationServiceImpl {
 
         // Spawn task to forward deltas to this peer
         let tx_for_deltas = tx.clone();
+        let metrics_for_deltas = Arc::clone(&self.metrics);
         tokio::spawn(async move {
             // Batch interval timer
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(50));
@@ -254,6 +255,7 @@ impl ReplicationService for ReplicationServiceImpl {
                         let mut compactor = compactor_clone.write().await;
                         if !compactor.is_empty() {
                             let deltas = compactor.drain();
+                            let delta_count = deltas.len();
                             let seq = sequence_clone.fetch_add(1, Ordering::SeqCst);
 
                             let batch = ReplicationMessage {
@@ -263,7 +265,11 @@ impl ReplicationService for ReplicationServiceImpl {
                                 })),
                             };
 
-                            if tx_for_deltas.send(Ok(batch)).await.is_err() {
+                            if tx_for_deltas.send(Ok(batch)).await.is_ok() {
+                                for _ in 0..delta_count {
+                                    metrics_for_deltas.delta_sent();
+                                }
+                            } else {
                                 break;
                             }
                         }

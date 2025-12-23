@@ -254,8 +254,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue INCR delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -310,8 +308,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue INCRBY delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -334,8 +330,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue DECR delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -371,8 +365,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue DECRBY delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -400,8 +392,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue SET delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str("+OK\r\n");
                 }
@@ -436,9 +426,7 @@ fn execute_command(
             if !store.exists(key) {
                 match store.set_string_str(key, value.clone()) {
                     Some(delta) => {
-                        if delta_tx.try_send(delta).is_ok() {
-                            metrics.delta_sent();
-                        } else {
+                        if delta_tx.try_send(delta).is_err() {
                             metrics.delta_send_error();
                         }
                         response.push_str(":1\r\n");
@@ -462,9 +450,7 @@ fn execute_command(
             let new_len = new_value.len();
             match store.set_string_str(key, new_value) {
                 Some(delta) => {
-                    if delta_tx.try_send(delta).is_ok() {
-                        metrics.delta_sent();
-                    } else {
+                    if delta_tx.try_send(delta).is_err() {
                         metrics.delta_send_error();
                     }
                     let _ = write!(response, ":{}\r\n", new_len);
@@ -584,8 +570,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue EXPIRE delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -611,8 +595,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PEXPIRE delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -638,8 +620,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue EXPIREAT delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -665,8 +645,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PEXPIREAT delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -685,8 +663,6 @@ fn execute_command(
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PERSIST delta: {}", e);
                         metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }

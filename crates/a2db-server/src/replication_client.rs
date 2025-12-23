@@ -129,6 +129,7 @@ impl ReplicationClient {
         let sequence_clone = Arc::clone(&sequence);
         let tx_clone = tx.clone();
         let mut delta_rx = self.delta_rx.resubscribe();
+        let metrics_clone = Arc::clone(&self.metrics);
 
         let sender_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(50));
@@ -153,6 +154,7 @@ impl ReplicationClient {
                         let mut comp = compactor_clone.write().await;
                         if !comp.is_empty() {
                             let deltas = comp.drain();
+                            let delta_count = deltas.len();
                             let seq = sequence_clone.fetch_add(1, Ordering::SeqCst);
 
                             let batch = ReplicationMessage {
@@ -162,7 +164,11 @@ impl ReplicationClient {
                                 })),
                             };
 
-                            if tx_clone.send(batch).await.is_err() {
+                            if tx_clone.send(batch).await.is_ok() {
+                                for _ in 0..delta_count {
+                                    metrics_clone.delta_sent();
+                                }
+                            } else {
                                 break;
                             }
                         }
