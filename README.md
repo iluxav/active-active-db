@@ -61,46 +61,52 @@ make run            # Run in debug mode
 make run-release    # Run in release mode
 make test           # Run tests
 make docker-up      # Start in Docker
+
+
 ```
 
 ## Supported Commands
 
 ### Counter Operations
-| Command | Description |
-|---------|-------------|
-| `INCR key` | Increment by 1 |
-| `INCRBY key amount` | Increment by amount |
-| `DECR key` | Decrement by 1 |
-| `DECRBY key amount` | Decrement by amount |
-| `GET key` | Get current value |
+
+| Command              | Description         |
+| -------------------- | ------------------- |
+| `INCR key`           | Increment by 1      |
+| `INCRBY key amount`  | Increment by amount |
+| `DECR key`           | Decrement by 1      |
+| `DECRBY key amount`  | Decrement by amount |
+| `GET key`            | Get current value   |
 | `MGET key1 key2 ...` | Get multiple values |
 
 ### String Operations
-| Command | Description |
-|---------|-------------|
+
+| Command         | Description                     |
+| --------------- | ------------------------------- |
 | `SET key value` | Set string value (LWW-Register) |
-| `GET key` | Get string value |
-| `STRLEN key` | Get string length |
+| `GET key`       | Get string value                |
+| `STRLEN key`    | Get string length               |
 
 ### TTL Operations
-| Command | Description |
-|---------|-------------|
-| `EXPIRE key seconds` | Set TTL in seconds |
-| `PEXPIRE key ms` | Set TTL in milliseconds |
-| `TTL key` | Get remaining TTL (seconds) |
-| `PTTL key` | Get remaining TTL (ms) |
-| `PERSIST key` | Remove TTL |
+
+| Command              | Description                 |
+| -------------------- | --------------------------- |
+| `EXPIRE key seconds` | Set TTL in seconds          |
+| `PEXPIRE key ms`     | Set TTL in milliseconds     |
+| `TTL key`            | Get remaining TTL (seconds) |
+| `PTTL key`           | Get remaining TTL (ms)      |
+| `PERSIST key`        | Remove TTL                  |
 
 ### Utility Commands
-| Command | Description |
-|---------|-------------|
-| `PING` | Health check |
-| `INFO` | Server information |
-| `DBSIZE` | Number of keys |
-| `KEYS *` | List all keys |
-| `EXISTS key` | Check if key exists |
-| `TYPE key` | Get key type |
-| `SCAN cursor` | Iterate keys |
+
+| Command       | Description         |
+| ------------- | ------------------- |
+| `PING`        | Health check        |
+| `INFO`        | Server information  |
+| `DBSIZE`      | Number of keys      |
+| `KEYS *`      | List all keys       |
+| `EXISTS key`  | Check if key exists |
+| `TYPE key`    | Get key type        |
+| `SCAN cursor` | Iterate keys        |
 
 ## Configuration
 
