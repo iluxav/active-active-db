@@ -1,7 +1,7 @@
 use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use a2db_proto::replication::v1::{
-    replication_service_server::ReplicationService, Ack, AntiEntropyRequest, Delta, DeltaBatch,
-    DeltaType, Handshake, ReplicationMessage, replication_message::Message,
+    replication_message::Message, replication_service_server::ReplicationService, Ack,
+    AntiEntropyRequest, Delta, DeltaBatch, DeltaType, Handshake, ReplicationMessage,
 };
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tokio_stream::{wrappers::ReceiverStream, Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
-use tracing::{debug, info, warn, instrument};
+use tracing::{debug, info, instrument, warn};
 
 /// Implementation of the inter-replica ReplicationService
 pub struct ReplicationServiceImpl {
@@ -194,7 +194,10 @@ impl ReplicationService for ReplicationServiceImpl {
                                     }
                                 }
                                 Message::Ack(ack) => {
-                                    debug!("Received ack for sequence {} from {}", ack.sequence, peer_id);
+                                    debug!(
+                                        "Received ack for sequence {} from {}",
+                                        ack.sequence, peer_id
+                                    );
                                 }
                                 Message::Handshake(_) => {
                                     warn!("Unexpected handshake after initial handshake");
@@ -263,8 +266,7 @@ impl ReplicationService for ReplicationServiceImpl {
         Ok(Response::new(Box::pin(output_stream)))
     }
 
-    type AntiEntropyStream =
-        Pin<Box<dyn Stream<Item = Result<Delta, Status>> + Send + 'static>>;
+    type AntiEntropyStream = Pin<Box<dyn Stream<Item = Result<Delta, Status>> + Send + 'static>>;
 
     #[instrument(skip(self, request))]
     async fn anti_entropy(
@@ -272,10 +274,7 @@ impl ReplicationService for ReplicationServiceImpl {
         request: Request<AntiEntropyRequest>,
     ) -> Result<Response<Self::AntiEntropyStream>, Status> {
         let req = request.into_inner();
-        info!(
-            "Anti-entropy request from replica: {}",
-            req.replica_id
-        );
+        info!("Anti-entropy request from replica: {}", req.replica_id);
 
         // Get all deltas from the store
         let all_deltas = self.store.all_deltas();

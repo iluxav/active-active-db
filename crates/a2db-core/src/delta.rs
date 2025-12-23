@@ -187,7 +187,11 @@ impl DeltaCompactor {
     /// For S: Takes entry with higher (timestamp_ms, replica_id).
     /// Always takes MAX of expires_at_ms.
     pub fn add(&mut self, delta: Delta) {
-        let key = (delta.key.clone(), delta.origin_replica_id.clone(), delta.delta_type);
+        let key = (
+            delta.key.clone(),
+            delta.origin_replica_id.clone(),
+            delta.delta_type,
+        );
 
         self.pending
             .entry(key)
@@ -341,8 +345,18 @@ mod tests {
         let mut compactor = DeltaCompactor::new();
 
         // P and N deltas for same key/replica should be separate entries
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 10, DeltaType::P));
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 5, DeltaType::N));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            10,
+            DeltaType::P,
+        ));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            5,
+            DeltaType::N,
+        ));
 
         assert_eq!(compactor.len(), 2);
 
@@ -355,17 +369,43 @@ mod tests {
         let mut compactor = DeltaCompactor::new();
 
         // Multiple P deltas - should take max
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 5, DeltaType::P));
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 10, DeltaType::P));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            5,
+            DeltaType::P,
+        ));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            10,
+            DeltaType::P,
+        ));
 
         // Multiple N deltas - should take max
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 3, DeltaType::N));
-        compactor.add(Delta::with_type(key("key1"), replica("r1"), 7, DeltaType::N));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            3,
+            DeltaType::N,
+        ));
+        compactor.add(Delta::with_type(
+            key("key1"),
+            replica("r1"),
+            7,
+            DeltaType::N,
+        ));
 
         let deltas = compactor.drain();
 
-        let p_delta = deltas.iter().find(|d| d.delta_type == DeltaType::P).unwrap();
-        let n_delta = deltas.iter().find(|d| d.delta_type == DeltaType::N).unwrap();
+        let p_delta = deltas
+            .iter()
+            .find(|d| d.delta_type == DeltaType::P)
+            .unwrap();
+        let n_delta = deltas
+            .iter()
+            .find(|d| d.delta_type == DeltaType::N)
+            .unwrap();
 
         assert_eq!(p_delta.component_value, 10);
         assert_eq!(n_delta.component_value, 7);

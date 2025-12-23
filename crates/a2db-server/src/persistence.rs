@@ -86,12 +86,14 @@ impl PersistenceManager {
         // Serialize based on configured format
         let data: Vec<u8> = match self.config.format {
             SnapshotFormat::Json => {
-                let json = snapshot.to_json().map_err(PersistenceError::SnapshotError)?;
+                let json = snapshot
+                    .to_json()
+                    .map_err(PersistenceError::SnapshotError)?;
                 json.into_bytes()
             }
-            SnapshotFormat::Bincode => {
-                snapshot.to_bincode().map_err(PersistenceError::SnapshotError)?
-            }
+            SnapshotFormat::Bincode => snapshot
+                .to_bincode()
+                .map_err(PersistenceError::SnapshotError)?,
         };
 
         // Write to temp file
@@ -173,8 +175,7 @@ impl PersistenceManager {
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 let name = entry.file_name().to_string_lossy().to_string();
-                name.starts_with("snapshot-")
-                    && (name.ends_with(".json") || name.ends_with(".bin"))
+                name.starts_with("snapshot-") && (name.ends_with(".json") || name.ends_with(".bin"))
             })
             .map(|entry| entry.path())
             .collect();
@@ -194,10 +195,7 @@ impl PersistenceManager {
         let mut reader = BufReader::new(file);
 
         // Detect format from file extension
-        let is_bincode = path
-            .extension()
-            .map(|ext| ext == "bin")
-            .unwrap_or(false);
+        let is_bincode = path.extension().map(|ext| ext == "bin").unwrap_or(false);
 
         if is_bincode {
             let mut bytes = Vec::new();
@@ -245,7 +243,10 @@ impl PersistenceManager {
 /// Errors that can occur during persistence operations.
 #[derive(Debug)]
 pub enum PersistenceError {
-    IoError { path: String, source: std::io::Error },
+    IoError {
+        path: String,
+        source: std::io::Error,
+    },
     SnapshotError(SnapshotError),
 }
 

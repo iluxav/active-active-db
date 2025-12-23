@@ -1,7 +1,7 @@
 use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use a2db_proto::replication::v1::{
-    replication_service_client::ReplicationServiceClient, AntiEntropyRequest, DeltaBatch,
-    DeltaType, Handshake, ReplicationMessage, replication_message::Message,
+    replication_message::Message, replication_service_client::ReplicationServiceClient,
+    AntiEntropyRequest, DeltaBatch, DeltaType, Handshake, ReplicationMessage,
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -63,10 +63,7 @@ impl ReplicationClient {
             // Exponential backoff with jitter
             let jitter = Duration::from_millis(rand_jitter(500));
             let delay = retry_delay + jitter;
-            warn!(
-                "Reconnecting to {} in {:?}",
-                self.peer_addr, delay
-            );
+            warn!("Reconnecting to {} in {:?}", self.peer_addr, delay);
             sleep(delay).await;
 
             // Increase delay for next retry
@@ -190,11 +187,9 @@ impl ReplicationClient {
 
                                 // Send ack
                                 let ack = ReplicationMessage {
-                                    message: Some(Message::Ack(
-                                        a2db_proto::replication::v1::Ack {
-                                            sequence: batch.sequence,
-                                        },
-                                    )),
+                                    message: Some(Message::Ack(a2db_proto::replication::v1::Ack {
+                                        sequence: batch.sequence,
+                                    })),
                                 };
                                 if tx.send(ack).await.is_err() {
                                     break;

@@ -43,9 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let key = &args[2];
 
-            let response = client
-                .get(GetRequest { key: key.clone() })
-                .await?;
+            let response = client.get(GetRequest { key: key.clone() }).await?;
 
             println!("{}", response.into_inner().value);
         }

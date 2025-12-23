@@ -1,7 +1,9 @@
 use a2db_core::{CounterStore, Delta};
 use std::io;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, BufWriter as TokioBufWriter};
+use tokio::io::{
+    AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, BufWriter as TokioBufWriter,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -187,7 +189,9 @@ fn execute_command(
 
             if amount < 0 {
                 // Use DECRBY for negative values
-                response.push_str("-ERR INCRBY only supports positive values, use DECRBY for decrement\r\n");
+                response.push_str(
+                    "-ERR INCRBY only supports positive values, use DECRBY for decrement\r\n",
+                );
                 return;
             }
 
@@ -197,7 +201,9 @@ fn execute_command(
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -214,7 +220,9 @@ fn execute_command(
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -234,7 +242,9 @@ fn execute_command(
             };
 
             if amount < 0 {
-                response.push_str("-ERR DECRBY only supports positive values, use INCRBY for increment\r\n");
+                response.push_str(
+                    "-ERR DECRBY only supports positive values, use INCRBY for increment\r\n",
+                );
                 return;
             }
 
@@ -244,7 +254,9 @@ fn execute_command(
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -261,7 +273,9 @@ fn execute_command(
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -318,7 +332,9 @@ fn execute_command(
                     response.push_str("+OK\r\n");
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -366,7 +382,9 @@ fn execute_command(
                     let _ = write!(response, ":{}\r\n", new_len);
                 }
                 None => {
-                    response.push_str("-WRONGTYPE Operation against a key holding the wrong kind of value\r\n");
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
@@ -422,7 +440,12 @@ fn execute_command(
             };
 
             let cursor_str = next_cursor.to_string();
-            let _ = write!(response, "*2\r\n${}\r\n{}\r\n", cursor_str.len(), next_cursor);
+            let _ = write!(
+                response,
+                "*2\r\n${}\r\n{}\r\n",
+                cursor_str.len(),
+                next_cursor
+            );
             let _ = write!(response, "*{}\r\n", keys_slice.len());
             for key in keys_slice {
                 let _ = write!(response, "${}\r\n{}\r\n", key.len(), key);
@@ -548,7 +571,8 @@ fn execute_command(
             }
             let keys_to_check = &args[1..];
             let existing_keys = store.keys();
-            let count = keys_to_check.iter()
+            let count = keys_to_check
+                .iter()
                 .filter(|k| existing_keys.iter().any(|ek| ek.as_ref() == k.as_str()))
                 .count();
             let _ = write!(response, ":{}\r\n", count);

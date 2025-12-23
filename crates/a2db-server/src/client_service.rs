@@ -1,7 +1,7 @@
 use a2db_core::{CounterStore, Delta};
 use a2db_proto::counter::v1::{
-    counter_service_server::CounterService, GetRequest, GetResponse, IncrByRequest,
-    IncrByResponse, MGetRequest, MGetResponse,
+    counter_service_server::CounterService, GetRequest, GetResponse, IncrByRequest, IncrByResponse,
+    MGetRequest, MGetResponse,
 };
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -54,9 +54,9 @@ impl CounterService for CounterServiceImpl {
 
                 Ok(Response::new(IncrByResponse { value }))
             }
-            None => {
-                Err(Status::failed_precondition("WRONGTYPE Operation against a key holding the wrong kind of value"))
-            }
+            None => Err(Status::failed_precondition(
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            )),
         }
     }
 

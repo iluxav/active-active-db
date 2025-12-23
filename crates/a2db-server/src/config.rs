@@ -269,15 +269,21 @@ impl Config {
     /// Create configuration from CLI arguments only (no config file)
     pub fn from_cli(args: &CliArgs) -> Result<Self, ConfigError> {
         let replica_id = args.replica_id.clone().ok_or_else(|| {
-            ConfigError::Validation("--replica-id is required when no config file is provided".to_string())
+            ConfigError::Validation(
+                "--replica-id is required when no config file is provided".to_string(),
+            )
         })?;
 
         let client_listen_addr = args.client_addr.clone().ok_or_else(|| {
-            ConfigError::Validation("--client-addr is required when no config file is provided".to_string())
+            ConfigError::Validation(
+                "--client-addr is required when no config file is provided".to_string(),
+            )
         })?;
 
         let replication_listen_addr = args.replication_addr.clone().ok_or_else(|| {
-            ConfigError::Validation("--replication-addr is required when no config file is provided".to_string())
+            ConfigError::Validation(
+                "--replication-addr is required when no config file is provided".to_string(),
+            )
         })?;
 
         Ok(Self {
@@ -297,7 +303,9 @@ impl Config {
             persistence: PersistenceConfig {
                 enabled: args.persistence,
                 data_dir: args.data_dir.clone().unwrap_or_else(default_data_dir),
-                snapshot_interval_s: args.snapshot_interval.unwrap_or_else(default_snapshot_interval),
+                snapshot_interval_s: args
+                    .snapshot_interval
+                    .unwrap_or_else(default_snapshot_interval),
                 ..Default::default()
             },
             expiration: ExpirationConfig::default(),

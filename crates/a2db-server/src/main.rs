@@ -6,13 +6,13 @@ mod redis_protocol;
 mod replication_client;
 mod replication_service;
 
+use a2db_core::{CounterStore, Delta};
+use a2db_proto::counter::v1::counter_service_server::CounterServiceServer;
+use a2db_proto::replication::v1::replication_service_server::ReplicationServiceServer;
 use clap::Parser;
 use client_service::CounterServiceImpl;
 use config::{CliArgs, Config};
 use persistence::PersistenceManager;
-use a2db_core::{CounterStore, Delta};
-use a2db_proto::counter::v1::counter_service_server::CounterServiceServer;
-use a2db_proto::replication::v1::replication_service_server::ReplicationServiceServer;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
 use std::sync::Arc;
@@ -101,13 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client_service = CounterServiceImpl::new(Arc::clone(&store), delta_tx);
 
     // Create replication service
-    let replication_service =
-        ReplicationServiceImpl::new(Arc::clone(&store), broadcast_tx.clone());
+    let replication_service = ReplicationServiceImpl::new(Arc::clone(&store), broadcast_tx.clone());
 
     // Start Redis-compatible server if configured
     if let Some(redis_addr) = &config.server.redis_listen_addr {
-        let redis_server =
-            redis_protocol::RedisServer::new(Arc::clone(&store), redis_delta_tx);
+        let redis_server = redis_protocol::RedisServer::new(Arc::clone(&store), redis_delta_tx);
         let redis_addr = redis_addr.clone();
         tokio::spawn(async move {
             if let Err(e) = redis_server.serve(&redis_addr).await {
@@ -168,8 +166,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn init_logging(config: &config::LoggingConfig) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(&config.level));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.level));
 
     match config.format.as_str() {
         "json" => {
