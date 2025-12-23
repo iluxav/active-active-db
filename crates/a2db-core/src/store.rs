@@ -139,11 +139,28 @@ impl CounterStore {
     /// Returns (new total value, delta to replicate).
     ///
     /// Returns None if the key exists but holds a string value.
+    /// If the key is expired, it's treated as a fresh key (starts from 0).
     pub fn increment(&self, key: &Key, amount: u64) -> Option<(i64, Delta)> {
         let mut entry = self.entries.entry(key.clone()).or_default();
 
+        // Check for expired string and replace with counter
+        if let ValueType::String(string_entry) = entry.value() {
+            if let Some(exp) = string_entry.expires_at_ms {
+                if current_time_ms() >= exp {
+                    *entry.value_mut() = ValueType::Counter(CounterEntry::default());
+                }
+            }
+        }
+
         match entry.value_mut() {
             ValueType::Counter(counter_entry) => {
+                // Reset if expired (only checks timestamp when TTL is set)
+                if let Some(exp) = counter_entry.expires_at_ms {
+                    if current_time_ms() >= exp {
+                        *counter_entry = CounterEntry::default();
+                    }
+                }
+
                 let new_component = counter_entry
                     .counter
                     .increment(&self.local_replica_id, amount);
@@ -159,7 +176,7 @@ impl CounterStore {
 
                 Some((total, delta))
             }
-            ValueType::String(_) => None, // Type mismatch
+            ValueType::String(_) => None, // Type mismatch (non-expired string)
         }
     }
 
@@ -173,11 +190,28 @@ impl CounterStore {
     /// Returns (new total value, delta to replicate).
     ///
     /// Returns None if the key exists but holds a string value.
+    /// If the key is expired, it's treated as a fresh key (starts from 0).
     pub fn decrement(&self, key: &Key, amount: u64) -> Option<(i64, Delta)> {
         let mut entry = self.entries.entry(key.clone()).or_default();
 
+        // Check for expired string and replace with counter
+        if let ValueType::String(string_entry) = entry.value() {
+            if let Some(exp) = string_entry.expires_at_ms {
+                if current_time_ms() >= exp {
+                    *entry.value_mut() = ValueType::Counter(CounterEntry::default());
+                }
+            }
+        }
+
         match entry.value_mut() {
             ValueType::Counter(counter_entry) => {
+                // Reset if expired (only checks timestamp when TTL is set)
+                if let Some(exp) = counter_entry.expires_at_ms {
+                    if current_time_ms() >= exp {
+                        *counter_entry = CounterEntry::default();
+                    }
+                }
+
                 let new_component = counter_entry
                     .counter
                     .decrement(&self.local_replica_id, amount);
@@ -193,7 +227,7 @@ impl CounterStore {
 
                 Some((total, delta))
             }
-            ValueType::String(_) => None, // Type mismatch
+            ValueType::String(_) => None, // Type mismatch (non-expired string)
         }
     }
 
@@ -205,6 +239,7 @@ impl CounterStore {
 
     /// Set a string value using LWW-Register.
     /// Returns the delta to replicate, or None if key holds a counter.
+    /// If the key is expired, it's treated as a fresh key.
     pub fn set_string(&self, key: &Key, value: String) -> Option<Delta> {
         let timestamp = current_time_ms();
         let register = LWWRegister::new(value.clone(), timestamp, self.local_replica_id.clone());
@@ -214,8 +249,23 @@ impl CounterStore {
             .entry(key.clone())
             .or_insert_with(|| ValueType::String(StringEntry::new(register.clone())));
 
+        // Check for expired counter and replace with string
+        if let ValueType::Counter(counter_entry) = entry.value() {
+            if let Some(exp) = counter_entry.expires_at_ms {
+                if timestamp >= exp {
+                    *entry.value_mut() = ValueType::String(StringEntry::new(register.clone()));
+                }
+            }
+        }
+
         match entry.value_mut() {
             ValueType::String(string_entry) => {
+                // Reset if expired
+                if let Some(exp) = string_entry.expires_at_ms {
+                    if timestamp >= exp {
+                        *string_entry = StringEntry::new(register.clone());
+                    }
+                }
                 string_entry.register = register;
                 Some(Delta::string(
                     key.clone(),
@@ -225,7 +275,7 @@ impl CounterStore {
                     string_entry.expires_at_ms,
                 ))
             }
-            ValueType::Counter(_) => None, // Type mismatch
+            ValueType::Counter(_) => None, // Type mismatch (non-expired counter)
         }
     }
 
@@ -1294,5 +1344,64 @@ mod tests {
         let pttl_after = store.pttl("k1");
         assert!(pttl_after <= pttl_before); // Should be same or slightly less
         assert!(pttl_after > 59000); // Still around 60 seconds
+    }
+
+    #[test]
+    fn test_increment_expired_key_resets_to_zero() {
+        let store = CounterStore::with_replica_id("r1");
+
+        // Create key with value 100
+        store.increment_str("k1", 100);
+        assert_eq!(store.get("k1"), 100);
+
+        // Expire the key
+        let past_ms = current_time_ms().saturating_sub(1000);
+        store.expire_at("k1", past_ms);
+
+        // GET should return 0 (expired)
+        assert_eq!(store.get("k1"), 0);
+
+        // INCR should start fresh from 0, not continue from 100
+        let (value, _) = store.increment_str("k1", 5).unwrap();
+        assert_eq!(value, 5); // Should be 5, not 105
+
+        // Verify via GET
+        assert_eq!(store.get("k1"), 5);
+    }
+
+    #[test]
+    fn test_decrement_expired_key_resets_to_zero() {
+        let store = CounterStore::with_replica_id("r1");
+
+        // Create key with value 100
+        store.increment_str("k1", 100);
+
+        // Expire the key
+        let past_ms = current_time_ms().saturating_sub(1000);
+        store.expire_at("k1", past_ms);
+
+        // DECR should start fresh from 0
+        let (value, _) = store.decrement_str("k1", 5).unwrap();
+        assert_eq!(value, -5); // Should be -5, not 95
+
+        assert_eq!(store.get("k1"), -5);
+    }
+
+    #[test]
+    fn test_set_expired_counter_allows_string() {
+        let store = CounterStore::with_replica_id("r1");
+
+        // Create counter
+        store.increment_str("k1", 100);
+        assert_eq!(store.get_type("k1"), Some("counter"));
+
+        // Expire it
+        let past_ms = current_time_ms().saturating_sub(1000);
+        store.expire_at("k1", past_ms);
+
+        // SET should now work (expired counter is removed)
+        assert!(store.set_string_str("k1", "hello".to_string()).is_some());
+        assert_eq!(store.get_type("k1"), Some("string"));
+        assert_eq!(store.get_string("k1"), Some("hello".to_string()));
     }
 }
