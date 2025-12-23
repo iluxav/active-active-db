@@ -6,15 +6,15 @@ mod redis_protocol;
 mod replication_client;
 mod replication_service;
 
+use clap::Parser;
 use client_service::CounterServiceImpl;
-use config::Config;
+use config::{CliArgs, Config};
 use persistence::PersistenceManager;
 use counter_core::{CounterStore, Delta};
 use counter_proto::counter::v1::counter_service_server::CounterServiceServer;
 use counter_proto::replication::v1::replication_service_server::ReplicationServiceServer;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
-use std::env;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tonic::transport::Server;
@@ -23,15 +23,11 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Get config path from command line or environment
-    let config_path = env::args()
-        .nth(1)
-        .or_else(|| env::var("COUNTER_CONFIG").ok())
-        .unwrap_or_else(|| "config.toml".to_string());
+    // Parse command-line arguments
+    let args = CliArgs::parse();
 
-    // Load configuration
-    let config = Config::from_file(&config_path)?;
-    config.validate()?;
+    // Load configuration (from file if provided, or from CLI args)
+    let config = Config::load(&args)?;
 
     // Initialize logging
     init_logging(&config.logging);

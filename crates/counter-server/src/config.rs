@@ -1,6 +1,58 @@
+use clap::Parser;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
+
+/// Command-line arguments for the counter server
+#[derive(Parser, Debug)]
+#[command(name = "counter-server")]
+#[command(about = "Active-Active Counter Store Server", long_about = None)]
+#[command(version)]
+pub struct CliArgs {
+    /// Path to TOML configuration file (optional if all required args provided)
+    #[arg(short, long, env = "COUNTER_CONFIG")]
+    pub config: Option<String>,
+
+    /// Unique replica ID for this instance
+    #[arg(long, env = "COUNTER_REPLICA_ID")]
+    pub replica_id: Option<String>,
+
+    /// gRPC client listen address (e.g., 0.0.0.0:9000)
+    #[arg(long, env = "COUNTER_CLIENT_ADDR")]
+    pub client_addr: Option<String>,
+
+    /// Replication listen address (e.g., 0.0.0.0:9001)
+    #[arg(long, env = "COUNTER_REPLICATION_ADDR")]
+    pub replication_addr: Option<String>,
+
+    /// Redis-compatible listen address (e.g., 0.0.0.0:6379)
+    #[arg(long, env = "COUNTER_REDIS_ADDR")]
+    pub redis_addr: Option<String>,
+
+    /// Peer replica addresses for replication (can be specified multiple times)
+    #[arg(long = "peer", env = "COUNTER_PEERS", value_delimiter = ',')]
+    pub peers: Option<Vec<String>>,
+
+    /// Enable persistence
+    #[arg(long, env = "COUNTER_PERSISTENCE")]
+    pub persistence: bool,
+
+    /// Data directory for persistence
+    #[arg(long, env = "COUNTER_DATA_DIR")]
+    pub data_dir: Option<String>,
+
+    /// Snapshot interval in seconds
+    #[arg(long, env = "COUNTER_SNAPSHOT_INTERVAL")]
+    pub snapshot_interval: Option<u64>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long, env = "COUNTER_LOG_LEVEL", default_value = "info")]
+    pub log_level: String,
+
+    /// Log format (pretty, json)
+    #[arg(long, env = "COUNTER_LOG_FORMAT", default_value = "pretty")]
+    pub log_format: String,
+}
 
 /// Server configuration loaded from TOML file
 #[derive(Debug, Clone, Deserialize)]
@@ -213,6 +265,106 @@ impl Config {
             path: path.as_ref().display().to_string(),
             source: e,
         })
+    }
+
+    /// Create configuration from CLI arguments only (no config file)
+    pub fn from_cli(args: &CliArgs) -> Result<Self, ConfigError> {
+        let replica_id = args.replica_id.clone().ok_or_else(|| {
+            ConfigError::ValidationError("--replica-id is required when no config file is provided".to_string())
+        })?;
+
+        let client_listen_addr = args.client_addr.clone().ok_or_else(|| {
+            ConfigError::ValidationError("--client-addr is required when no config file is provided".to_string())
+        })?;
+
+        let replication_listen_addr = args.replication_addr.clone().ok_or_else(|| {
+            ConfigError::ValidationError("--replication-addr is required when no config file is provided".to_string())
+        })?;
+
+        Ok(Self {
+            server: ServerConfig {
+                client_listen_addr,
+                replication_listen_addr,
+                redis_listen_addr: args.redis_addr.clone(),
+            },
+            identity: IdentityConfig {
+                replica_id,
+                identity_file: None,
+            },
+            replication: ReplicationConfig {
+                peers: args.peers.clone().unwrap_or_default(),
+                ..Default::default()
+            },
+            persistence: PersistenceConfig {
+                enabled: args.persistence,
+                data_dir: args.data_dir.clone().unwrap_or_else(default_data_dir),
+                snapshot_interval_s: args.snapshot_interval.unwrap_or_else(default_snapshot_interval),
+                ..Default::default()
+            },
+            expiration: ExpirationConfig::default(),
+            logging: LoggingConfig {
+                level: args.log_level.clone(),
+                format: args.log_format.clone(),
+            },
+        })
+    }
+
+    /// Apply CLI argument overrides to an existing config
+    pub fn apply_cli_overrides(&mut self, args: &CliArgs) {
+        // Server overrides
+        if let Some(ref addr) = args.client_addr {
+            self.server.client_listen_addr = addr.clone();
+        }
+        if let Some(ref addr) = args.replication_addr {
+            self.server.replication_listen_addr = addr.clone();
+        }
+        if let Some(ref addr) = args.redis_addr {
+            self.server.redis_listen_addr = Some(addr.clone());
+        }
+
+        // Identity overrides
+        if let Some(ref id) = args.replica_id {
+            self.identity.replica_id = id.clone();
+        }
+
+        // Replication overrides
+        if let Some(ref peers) = args.peers {
+            self.replication.peers = peers.clone();
+        }
+
+        // Persistence overrides
+        if args.persistence {
+            self.persistence.enabled = true;
+        }
+        if let Some(ref dir) = args.data_dir {
+            self.persistence.data_dir = dir.clone();
+        }
+        if let Some(interval) = args.snapshot_interval {
+            self.persistence.snapshot_interval_s = interval;
+        }
+
+        // Logging overrides (always applied since they have defaults)
+        self.logging.level = args.log_level.clone();
+        self.logging.format = args.log_format.clone();
+    }
+
+    /// Load config from file if provided, or create from CLI args, then apply overrides
+    pub fn load(args: &CliArgs) -> Result<Self, ConfigError> {
+        let mut config = if let Some(ref config_path) = args.config {
+            // Load from file
+            Self::from_file(config_path)?
+        } else {
+            // Try to create from CLI args only
+            Self::from_cli(args)?
+        };
+
+        // Apply any CLI overrides on top of file config
+        if args.config.is_some() {
+            config.apply_cli_overrides(args);
+        }
+
+        config.validate()?;
+        Ok(config)
     }
 
     /// Validate the configuration
