@@ -197,7 +197,9 @@ fn execute_command(
 
             match store.increment_str(key, amount as u64) {
                 Some((value, delta)) => {
-                    let _ = delta_tx.try_send(delta);
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue INCRBY delta: {}", e);
+                    }
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
@@ -216,7 +218,9 @@ fn execute_command(
             let key = &args[1];
             match store.increment_str(key, 1) {
                 Some((value, delta)) => {
-                    let _ = delta_tx.try_send(delta);
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue INCR delta: {}", e);
+                    }
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
@@ -250,7 +254,9 @@ fn execute_command(
 
             match store.decrement_str(key, amount as u64) {
                 Some((value, delta)) => {
-                    let _ = delta_tx.try_send(delta);
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue DECRBY delta: {}", e);
+                    }
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
@@ -269,7 +275,9 @@ fn execute_command(
             let key = &args[1];
             match store.decrement_str(key, 1) {
                 Some((value, delta)) => {
-                    let _ = delta_tx.try_send(delta);
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue DECR delta: {}", e);
+                    }
                     let _ = write!(response, ":{}\r\n", value);
                 }
                 None => {
@@ -328,7 +336,9 @@ fn execute_command(
 
             match store.set_string_str(key, value.clone()) {
                 Some(delta) => {
-                    let _ = delta_tx.try_send(delta);
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue SET delta: {}", e);
+                    }
                     response.push_str("+OK\r\n");
                 }
                 None => {
@@ -674,7 +684,59 @@ fn execute_command(
         }
 
         "DEBUG" => {
-            response.push_str("+OK\r\n");
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'debug' command\r\n");
+                return;
+            }
+            match args[1].to_uppercase().as_str() {
+                "CRDT" => {
+                    if args.len() < 3 {
+                        response.push_str(
+                            "-ERR usage: DEBUG CRDT <key> - show CRDT components for a key\r\n",
+                        );
+                        return;
+                    }
+                    let key = &args[2];
+                    match store.debug_counter_state(key) {
+                        Some((p_components, n_components, value, expires_at_ms)) => {
+                            // Format as bulk string with details
+                            let mut info = format!("Key: {}\n", key);
+                            info.push_str(&format!("Value: {}\n", value));
+                            info.push_str(&format!(
+                                "Expires: {}\n",
+                                expires_at_ms
+                                    .map(|e| e.to_string())
+                                    .unwrap_or_else(|| "never".to_string())
+                            ));
+                            info.push_str("P-components (increments):\n");
+                            for (replica, val) in &p_components {
+                                info.push_str(&format!("  {}: {}\n", replica, val));
+                            }
+                            info.push_str("N-components (decrements):\n");
+                            for (replica, val) in &n_components {
+                                info.push_str(&format!("  {}: {}\n", replica, val));
+                            }
+                            let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                        }
+                        None => {
+                            // Check if it's a string
+                            if let Some(val) = store.get_string(key) {
+                                let info = format!("Key: {}\nType: string\nValue: {}\n", key, val);
+                                let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                            } else {
+                                response.push_str("$-1\r\n"); // nil - key not found
+                            }
+                        }
+                    }
+                }
+                "REPLICA" => {
+                    let info = format!("Local replica ID: {}\n", store.local_replica_id());
+                    let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                }
+                _ => {
+                    response.push_str("+OK\r\n");
+                }
+            }
         }
 
         "MEMORY" => {

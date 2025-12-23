@@ -302,6 +302,36 @@ impl CounterStore {
             .unwrap_or(0)
     }
 
+    /// Debug: Get raw CRDT components for a counter key.
+    /// Returns (p_components, n_components, value, expires_at_ms) or None if not found/expired/string.
+    pub fn debug_counter_state(
+        &self,
+        key: &str,
+    ) -> Option<(Vec<(String, u64)>, Vec<(String, u64)>, i64, Option<u64>)> {
+        self.entries.get(key).and_then(|entry| {
+            if Self::is_entry_expired(entry.value()) {
+                return None;
+            }
+            match entry.value() {
+                ValueType::Counter(e) => {
+                    let p: Vec<(String, u64)> = e
+                        .counter
+                        .p_components()
+                        .map(|(r, v)| (r.to_string(), *v))
+                        .collect();
+                    let n: Vec<(String, u64)> = e
+                        .counter
+                        .n_components()
+                        .map(|(r, v)| (r.to_string(), *v))
+                        .collect();
+                    let value = e.counter.value();
+                    Some((p, n, value, e.expires_at_ms))
+                }
+                ValueType::String(_) => None,
+            }
+        })
+    }
+
     /// Get a string value (returns None for non-existent, expired, or counter keys)
     pub fn get_string(&self, key: &str) -> Option<String> {
         self.entries.get(key).and_then(|entry| {
@@ -1019,6 +1049,128 @@ mod tests {
         // Both should see the same value
         assert_eq!(store1.get("shared"), 17);
         assert_eq!(store2.get("shared"), 17);
+    }
+
+    #[test]
+    fn test_simultaneous_increment_convergence() {
+        // Simulates the user's scenario:
+        // - Two replicas both have counter at 10
+        // - Both increment by 1 simultaneously
+        // - After sync, both should show 12
+
+        let store1 = CounterStore::with_replica_id("nyc");
+        let store2 = CounterStore::with_replica_id("sfo");
+
+        let k = key("counter");
+
+        // Step 1: Build up to value 10 on both replicas
+        // NYC increments 5 times
+        for _ in 0..5 {
+            let (_, delta) = store1.increment(&k, 1).unwrap();
+            store2.apply_delta(&delta); // Sync to SFO
+        }
+        // SFO increments 5 times
+        for _ in 0..5 {
+            let (_, delta) = store2.increment(&k, 1).unwrap();
+            store1.apply_delta(&delta); // Sync to NYC
+        }
+
+        // Both should now show 10
+        assert_eq!(
+            store1.get("counter"),
+            10,
+            "NYC should have 10 before simultaneous increment"
+        );
+        assert_eq!(
+            store2.get("counter"),
+            10,
+            "SFO should have 10 before simultaneous increment"
+        );
+
+        // Step 2: Simulate SIMULTANEOUS increment by 1 on both
+        // (Before they exchange deltas)
+        let (local_val1, delta1) = store1.increment(&k, 1).unwrap();
+        let (local_val2, delta2) = store2.increment(&k, 1).unwrap();
+
+        // Each sees their LOCAL value (11) before sync
+        assert_eq!(
+            local_val1, 11,
+            "NYC local value should be 11 immediately after INCR"
+        );
+        assert_eq!(
+            local_val2, 11,
+            "SFO local value should be 11 immediately after INCR"
+        );
+
+        // GET also shows local value before sync
+        assert_eq!(
+            store1.get("counter"),
+            11,
+            "NYC GET should return 11 before sync"
+        );
+        assert_eq!(
+            store2.get("counter"),
+            11,
+            "SFO GET should return 11 before sync"
+        );
+
+        // Step 3: Exchange deltas (simulate replication)
+        let changed1 = store1.apply_delta(&delta2);
+        let changed2 = store2.apply_delta(&delta1);
+
+        assert!(changed1, "NYC should have applied SFO's delta");
+        assert!(changed2, "SFO should have applied NYC's delta");
+
+        // Step 4: After sync, BOTH should show 12
+        assert_eq!(store1.get("counter"), 12, "NYC should have 12 after sync");
+        assert_eq!(store2.get("counter"), 12, "SFO should have 12 after sync");
+
+        // Verify internal state
+        // NYC should have: {nyc: 6, sfo: 6} = 12
+        // SFO should have: {nyc: 6, sfo: 6} = 12
+        println!("Test passed: simultaneous increments correctly converge to 12");
+    }
+
+    #[test]
+    fn test_simultaneous_increment_multiple_rounds() {
+        // More rigorous test: multiple rounds of simultaneous increments
+
+        let store1 = CounterStore::with_replica_id("nyc");
+        let store2 = CounterStore::with_replica_id("sfo");
+
+        let k = key("counter");
+
+        // 10 rounds of simultaneous increments
+        for round in 1..=10 {
+            // Both increment simultaneously (before exchanging deltas)
+            let (_, delta1) = store1.increment(&k, 1).unwrap();
+            let (_, delta2) = store2.increment(&k, 1).unwrap();
+
+            // Exchange deltas
+            store1.apply_delta(&delta2);
+            store2.apply_delta(&delta1);
+
+            // After each round, value should be round * 2
+            let expected = (round * 2) as i64;
+            assert_eq!(
+                store1.get("counter"),
+                expected,
+                "Round {}: NYC should have {}",
+                round,
+                expected
+            );
+            assert_eq!(
+                store2.get("counter"),
+                expected,
+                "Round {}: SFO should have {}",
+                round,
+                expected
+            );
+        }
+
+        // Final value should be 20 (10 rounds * 2 increments per round)
+        assert_eq!(store1.get("counter"), 20);
+        assert_eq!(store2.get("counter"), 20);
     }
 
     #[test]
