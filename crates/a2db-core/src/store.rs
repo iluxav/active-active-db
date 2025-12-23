@@ -304,6 +304,7 @@ impl CounterStore {
 
     /// Debug: Get raw CRDT components for a counter key.
     /// Returns (p_components, n_components, value, expires_at_ms) or None if not found/expired/string.
+    #[allow(clippy::type_complexity)]
     pub fn debug_counter_state(
         &self,
         key: &str,
