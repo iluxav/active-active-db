@@ -52,6 +52,10 @@ pub struct CliArgs {
     /// Log format (pretty, json)
     #[arg(long, env = "A2DB_LOG_FORMAT", default_value = "pretty")]
     pub log_format: String,
+
+    /// Metrics HTTP endpoint address (e.g., 0.0.0.0:9090)
+    #[arg(long, env = "A2DB_METRICS_ADDR")]
+    pub metrics_addr: Option<String>,
 }
 
 /// Server configuration loaded from TOML file
@@ -67,6 +71,8 @@ pub struct Config {
     pub expiration: ExpirationConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -252,6 +258,16 @@ fn default_grace_period() -> u64 {
     5
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct MetricsConfig {
+    /// Enable/disable metrics endpoint
+    #[serde(default)]
+    pub enabled: bool,
+    /// Address for metrics HTTP endpoint (e.g., "0.0.0.0:9090")
+    #[serde(default)]
+    pub listen_addr: Option<String>,
+}
+
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
@@ -313,6 +329,10 @@ impl Config {
                 level: args.log_level.clone(),
                 format: args.log_format.clone(),
             },
+            metrics: MetricsConfig {
+                enabled: args.metrics_addr.is_some(),
+                listen_addr: args.metrics_addr.clone(),
+            },
         })
     }
 
@@ -353,6 +373,12 @@ impl Config {
         // Logging overrides (always applied since they have defaults)
         self.logging.level = args.log_level.clone();
         self.logging.format = args.log_format.clone();
+
+        // Metrics overrides
+        if let Some(ref addr) = args.metrics_addr {
+            self.metrics.enabled = true;
+            self.metrics.listen_addr = Some(addr.clone());
+        }
     }
 
     /// Load config from file if provided, or create from CLI args, then apply overrides
@@ -494,6 +520,7 @@ mod tests {
             persistence: PersistenceConfig::default(),
             expiration: ExpirationConfig::default(),
             logging: LoggingConfig::default(),
+            metrics: MetricsConfig::default(),
         };
 
         assert!(config.validate().is_err());

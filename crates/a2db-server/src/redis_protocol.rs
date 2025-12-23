@@ -1,6 +1,8 @@
+use crate::metrics::Metrics;
 use a2db_core::{CounterStore, Delta};
 use std::io;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::io::{
     AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, BufWriter as TokioBufWriter,
 };
@@ -13,11 +15,20 @@ use tracing::{debug, error, info};
 pub struct RedisServer {
     store: Arc<CounterStore>,
     delta_tx: mpsc::Sender<Delta>,
+    metrics: Arc<Metrics>,
 }
 
 impl RedisServer {
-    pub fn new(store: Arc<CounterStore>, delta_tx: mpsc::Sender<Delta>) -> Self {
-        Self { store, delta_tx }
+    pub fn new(
+        store: Arc<CounterStore>,
+        delta_tx: mpsc::Sender<Delta>,
+        metrics: Arc<Metrics>,
+    ) -> Self {
+        Self {
+            store,
+            delta_tx,
+            metrics,
+        }
     }
 
     pub async fn serve(self, addr: &str) -> io::Result<()> {
@@ -30,13 +41,19 @@ impl RedisServer {
 
             let store = Arc::clone(&self.store);
             let delta_tx = self.delta_tx.clone();
+            let metrics = Arc::clone(&self.metrics);
+
+            metrics.connection_opened();
 
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(socket, store, delta_tx).await {
+                if let Err(e) =
+                    handle_connection(socket, store, delta_tx, Arc::clone(&metrics)).await
+                {
                     if !is_connection_closed(&e) {
                         error!("Connection error from {}: {}", peer_addr, e);
                     }
                 }
+                metrics.connection_closed();
                 debug!("Redis client disconnected: {}", peer_addr);
             });
         }
@@ -57,6 +74,7 @@ async fn handle_connection(
     socket: TcpStream,
     store: Arc<CounterStore>,
     delta_tx: mpsc::Sender<Delta>,
+    metrics: Arc<Metrics>,
 ) -> io::Result<()> {
     // Disable Nagle's algorithm for lower latency
     socket.set_nodelay(true)?;
@@ -78,10 +96,18 @@ async fn handle_connection(
 
         if line.starts_with('*') {
             // RESP Array format (standard redis-cli)
-            handle_resp_command(&mut reader, &line, &store, &delta_tx, &mut response_buf).await?;
+            handle_resp_command(
+                &mut reader,
+                &line,
+                &store,
+                &delta_tx,
+                &mut response_buf,
+                &metrics,
+            )
+            .await?;
         } else {
             // Inline command format (telnet-style)
-            handle_inline_command(&line, &store, &delta_tx, &mut response_buf).await;
+            handle_inline_command(&line, &store, &delta_tx, &mut response_buf, &metrics).await;
         }
 
         writer.write_all(response_buf.as_bytes()).await?;
@@ -101,6 +127,7 @@ async fn handle_resp_command(
     store: &Arc<CounterStore>,
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
+    metrics: &Arc<Metrics>,
 ) -> io::Result<()> {
     // Parse array length: *N
     let count: usize = first_line
@@ -134,7 +161,11 @@ async fn handle_resp_command(
         args.push(line.trim().to_string());
     }
 
-    execute_command(&args, store, delta_tx, response);
+    let start = Instant::now();
+    execute_command(&args, store, delta_tx, response, metrics);
+    if !args.is_empty() {
+        metrics.record_command(&args[0], start);
+    }
     Ok(())
 }
 
@@ -144,13 +175,16 @@ async fn handle_inline_command(
     store: &Arc<CounterStore>,
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
+    metrics: &Arc<Metrics>,
 ) {
     let args: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
     if args.is_empty() {
         response.push_str("-ERR empty command\r\n");
         return;
     }
-    execute_command(&args, store, delta_tx, response);
+    let start = Instant::now();
+    execute_command(&args, store, delta_tx, response, metrics);
+    metrics.record_command(&args[0], start);
 }
 
 /// Execute a parsed command - writes response directly to buffer
@@ -159,6 +193,7 @@ fn execute_command(
     store: &Arc<CounterStore>,
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
+    metrics: &Arc<Metrics>,
 ) {
     use std::fmt::Write;
 
@@ -199,6 +234,9 @@ fn execute_command(
                 Some((value, delta)) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue INCRBY delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -220,6 +258,9 @@ fn execute_command(
                 Some((value, delta)) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue INCR delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -256,6 +297,9 @@ fn execute_command(
                 Some((value, delta)) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue DECRBY delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -277,6 +321,9 @@ fn execute_command(
                 Some((value, delta)) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue DECR delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     let _ = write!(response, ":{}\r\n", value);
                 }
@@ -338,6 +385,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue SET delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str("+OK\r\n");
                 }
@@ -361,7 +411,11 @@ fn execute_command(
             if !store.exists(key) {
                 match store.set_string_str(key, value.clone()) {
                     Some(delta) => {
-                        let _ = delta_tx.try_send(delta);
+                        if delta_tx.try_send(delta).is_ok() {
+                            metrics.delta_sent();
+                        } else {
+                            metrics.delta_send_error();
+                        }
                         response.push_str(":1\r\n");
                     }
                     None => {
@@ -388,7 +442,11 @@ fn execute_command(
 
             match store.set_string_str(key, new_value) {
                 Some(delta) => {
-                    let _ = delta_tx.try_send(delta);
+                    if delta_tx.try_send(delta).is_ok() {
+                        metrics.delta_sent();
+                    } else {
+                        metrics.delta_send_error();
+                    }
                     let _ = write!(response, ":{}\r\n", new_len);
                 }
                 None => {
@@ -513,6 +571,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue EXPIRE delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -537,6 +598,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PEXPIRE delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -561,6 +625,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue EXPIREAT delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -585,6 +652,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PEXPIREAT delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }
@@ -602,6 +672,9 @@ fn execute_command(
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
                         tracing::warn!("Failed to queue PERSIST delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
                     }
                     response.push_str(":1\r\n");
                 }

@@ -1,6 +1,7 @@
 mod client_service;
 mod config;
 mod expiration;
+mod metrics;
 mod persistence;
 mod redis_protocol;
 mod replication_client;
@@ -12,6 +13,7 @@ use a2db_proto::replication::v1::replication_service_server::ReplicationServiceS
 use clap::Parser;
 use client_service::CounterServiceImpl;
 use config::{CliArgs, Config};
+use metrics::{Metrics, MetricsServer};
 use persistence::PersistenceManager;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
@@ -39,6 +41,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the counter store
     let store = Arc::new(CounterStore::with_replica_id(&config.identity.replica_id));
+
+    // Create metrics
+    let metrics = Arc::new(Metrics::new());
+
+    // Start metrics server if enabled
+    if config.metrics.enabled {
+        if let Some(ref addr) = config.metrics.listen_addr {
+            let metrics_server = MetricsServer::new(Arc::clone(&metrics));
+            let metrics_addr = addr.clone();
+            tokio::spawn(async move {
+                if let Err(e) = metrics_server.serve(&metrics_addr).await {
+                    error!("Metrics server error: {}", e);
+                }
+            });
+        }
+    }
 
     // Initialize persistence if enabled
     if config.persistence.enabled {
@@ -105,7 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start Redis-compatible server if configured
     if let Some(redis_addr) = &config.server.redis_listen_addr {
-        let redis_server = redis_protocol::RedisServer::new(Arc::clone(&store), redis_delta_tx);
+        let redis_server = redis_protocol::RedisServer::new(
+            Arc::clone(&store),
+            redis_delta_tx,
+            Arc::clone(&metrics),
+        );
         let redis_addr = redis_addr.clone();
         tokio::spawn(async move {
             if let Err(e) = redis_server.serve(&redis_addr).await {
