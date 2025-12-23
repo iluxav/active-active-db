@@ -1,0 +1,17 @@
+# Single-node configuration for benchmarking
+[server]
+client_listen_addr = "0.0.0.0:19000"  # Use 19000 to avoid conflicts
+replication_listen_addr = "0.0.0.0:19001"
+redis_listen_addr = "0.0.0.0:16379"  # Use 16379 to avoid conflict with real Redis
+
+[identity]
+replica_id = "bench-node"
+
+[replication]
+peers = []  # No peers = single node
+
+[persistence]
+enabled = false  # Disable for pure performance testing
+
+[logging]
+level = "warn"  # Reduce logging overhead during benchmarks

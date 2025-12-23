@@ -1,0 +1,27 @@
+# Replica 1 - Local testing configuration
+
+[server]
+client_listen_addr = "127.0.0.1:9000"
+replication_listen_addr = "127.0.0.1:9001"
+redis_listen_addr = "127.0.0.1:16379"
+
+[identity]
+replica_id = "replica-1"
+
+[replication]
+peers = [
+    "http://127.0.0.1:9011",  # replica-2
+    "http://127.0.0.1:9021",  # replica-3
+]
+batch_interval_ms = 50
+max_batch_size = 1000
+
+[persistence]
+enabled = true
+data_dir = "./data/replica1"
+snapshot_interval_s = 5
+snapshot_retain_count = 3
+
+[logging]
+level = "info"
+format = "pretty"

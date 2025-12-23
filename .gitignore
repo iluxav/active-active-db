@@ -1,0 +1,18 @@
+/target
+Cargo.lock
+*.log
+*.swp
+*~
+target/
+deploy/
+# IDE
+.idea/
+.vscode/
+*.iml
+data
+redis-data
+# Local config (not the examples)
+config.toml
+
+# macOS
+.DS_Store

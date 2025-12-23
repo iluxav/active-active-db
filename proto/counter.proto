@@ -1,0 +1,48 @@
+syntax = "proto3";
+
+package counter.v1;
+
+// Client-facing Counter Service
+service CounterService {
+  // Increment a counter by a given amount
+  rpc IncrBy(IncrByRequest) returns (IncrByResponse);
+
+  // Get a single counter value
+  rpc Get(GetRequest) returns (GetResponse);
+
+  // Get multiple counter values
+  rpc MGet(MGetRequest) returns (MGetResponse);
+}
+
+message IncrByRequest {
+  // The counter key
+  string key = 1;
+  // Amount to increment (must be positive)
+  uint64 amount = 2;
+}
+
+message IncrByResponse {
+  // The new total value after increment
+  uint64 value = 1;
+}
+
+message GetRequest {
+  // The counter key
+  string key = 1;
+}
+
+message GetResponse {
+  // The current counter value (0 if key doesn't exist)
+  uint64 value = 1;
+}
+
+message MGetRequest {
+  // The counter keys to retrieve
+  repeated string keys = 1;
+}
+
+message MGetResponse {
+  // Values in the same order as requested keys
+  // Non-existent keys return 0
+  repeated uint64 values = 1;
+}

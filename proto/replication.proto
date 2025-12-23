@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package replication.v1;
+
+// Inter-replica replication service for delta synchronization
+service ReplicationService {
+  // Bidirectional streaming for continuous delta exchange
+  // Each replica maintains a persistent connection to its peers
+  rpc SyncStream(stream ReplicationMessage) returns (stream ReplicationMessage);
+
+  // One-shot anti-entropy: request full state from a peer
+  // Used for initial sync or after extended partitions
+  rpc AntiEntropy(AntiEntropyRequest) returns (stream Delta);
+}
+
+// Wrapper for all messages in the bidirectional stream
+message ReplicationMessage {
+  oneof message {
+    // Initial handshake on connection establishment
+    Handshake handshake = 1;
+    // Batch of deltas to apply
+    DeltaBatch delta_batch = 2;
+    // Acknowledgment of received deltas
+    Ack ack = 3;
+  }
+}
+
+// Handshake message sent when connection is established
+message Handshake {
+  // The sending replica's stable ID
+  string replica_id = 1;
+  // Protocol version for compatibility checking
+  uint32 protocol_version = 2;
+}
+
+// A single delta representing one component update
+message Delta {
+  // The counter key
+  string key = 1;
+  // The replica that originated this increment
+  string origin_replica_id = 2;
+  // The current component value for this replica
+  uint64 component_value = 3;
+  // Optional expiration timestamp in milliseconds since Unix epoch
+  // Uses MAX merge semantics: later expiration always wins
+  // 0 means no expiration (for backwards compatibility with proto3)
+  optional uint64 expires_at_ms = 4;
+}
+
+// A batch of deltas with a sequence number
+message DeltaBatch {
+  // Monotonically increasing sequence number
+  // Used for ordering and deduplication
+  uint64 sequence = 1;
+  // The deltas in this batch (may be compacted)
+  repeated Delta deltas = 2;
+}
+
+// Acknowledgment message
+message Ack {
+  // Acknowledges receipt of all batches up to and including this sequence
+  uint64 sequence = 1;
+}
+
+// Request for anti-entropy full state sync
+message AntiEntropyRequest {
+  // The requesting replica's ID
+  string replica_id = 1;
+}

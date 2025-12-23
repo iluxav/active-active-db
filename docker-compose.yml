@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  counter-db:
+    build: .
+    container_name: counter-db
+    ports:
+      - "16379:16379" # Redis protocol (16379 to avoid conflict with real Redis)
+      - "19000:19000" # gRPC client
+      - "19001:19001" # Replication
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+        reservations:
+          cpus: "1"
+          memory: 1G
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "echo PING | nc localhost 16379"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped

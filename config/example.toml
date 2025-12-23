@@ -1,0 +1,62 @@
+# Active-Active Counter Store Configuration
+# Copy this file to config.toml and customize for your deployment
+
+[server]
+# Address to listen on for client connections (INCRBY, GET, MGET)
+client_listen_addr = "0.0.0.0:9000"
+
+# Address to listen on for replication connections (inter-replica sync)
+replication_listen_addr = "0.0.0.0:9001"
+
+[identity]
+# Stable replica ID - must be unique across all replicas
+# This ID is used in the CRDT to track which replica made which increments
+# It should remain stable across restarts
+replica_id = "us-west-2-replica-1"
+
+# Optional: path to persist auto-generated replica ID
+# identity_file = "/var/lib/counter-store/identity"
+
+[replication]
+# Peer replicas to connect to for bidirectional delta sync
+# Each peer should be the replication address of another replica
+peers = [
+    # "http://eu-west-1.counter.internal:9001",
+    # "http://us-east-1.counter.internal:9001",
+]
+
+# How often to flush batched deltas to peers (milliseconds)
+# Lower values = lower latency but more network overhead
+batch_interval_ms = 50
+
+# Maximum deltas per batch
+# Larger batches are more efficient but may increase latency
+max_batch_size = 1000
+
+# Anti-entropy full sync interval (seconds, 0 to disable)
+# Periodic full sync helps recover from missed deltas
+# anti_entropy_interval_s = 300
+
+[persistence]
+# Enable/disable snapshot persistence
+enabled = true
+
+# Directory for snapshot files
+data_dir = "./data"
+
+# Snapshot interval in seconds
+snapshot_interval_s = 5
+
+# Keep N old snapshots for safety (older ones are deleted)
+snapshot_retain_count = 3
+
+# Snapshot format: "bincode" (compact, fast) or "json" (human-readable)
+# Default: bincode
+format = "bincode"
+
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+
+# Log format: "pretty" for human-readable, "json" for structured logs
+format = "pretty"

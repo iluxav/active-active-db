@@ -1,0 +1,21 @@
+# Single-node configuration for benchmarking WITH persistence
+[server]
+client_listen_addr = "0.0.0.0:19000"
+replication_listen_addr = "0.0.0.0:19001"
+redis_listen_addr = "0.0.0.0:16379"
+
+[identity]
+replica_id = "bench-node"
+
+[replication]
+peers = []  # No peers = single node
+
+[persistence]
+enabled = true
+data_dir = "/data"
+snapshot_interval_s = 60  # Similar to Redis save 60 1000
+snapshot_retain_count = 3
+format = "bincode"  # Faster than JSON
+
+[logging]
+level = "warn"
