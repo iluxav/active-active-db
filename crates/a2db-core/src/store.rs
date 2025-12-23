@@ -407,9 +407,19 @@ impl CounterStore {
         }
     }
 
-    /// Merge expiration timestamps using MAX semantics
+    /// Merge expiration timestamps using MAX semantics.
+    /// u64::MAX is treated as "never expires" (converts to None locally).
     fn merge_expiration(current: &mut Option<u64>, incoming: Option<u64>) -> bool {
         match (*current, incoming) {
+            // u64::MAX means "persist" - remove expiration
+            (Some(_), Some(u64::MAX)) | (None, Some(u64::MAX)) => {
+                if current.is_some() {
+                    *current = None;
+                    true
+                } else {
+                    false
+                }
+            }
             (None, Some(t)) => {
                 *current = Some(t);
                 true
@@ -509,33 +519,87 @@ impl CounterStore {
     // === TTL Operations ===
 
     /// Set expiration time using absolute Unix timestamp in milliseconds.
-    /// Returns true if the key exists and expiration was set.
-    pub fn expire_at(&self, key: &str, expires_at_ms: u64) -> bool {
+    /// Returns a delta for replication if the key exists, None otherwise.
+    pub fn expire_at(&self, key: &str, expires_at_ms: u64) -> Option<Delta> {
+        let key_arc: Key = Arc::from(key);
         if let Some(mut entry) = self.entries.get_mut(key) {
+            // Skip if already expired
+            if Self::is_entry_expired(entry.value()) {
+                return None;
+            }
+
             entry.value_mut().set_expires_at_ms(Some(expires_at_ms));
-            true
+
+            // Create delta with current value + new expiration
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    // Get current P component for this replica
+                    let component = counter_entry.counter.component(&self.local_replica_id);
+                    Some(Delta::with_type_and_expiration(
+                        key_arc,
+                        self.local_replica_id.clone(),
+                        component,
+                        DeltaType::P,
+                        Some(expires_at_ms),
+                    ))
+                }
+                ValueType::String(string_entry) => Some(Delta::string(
+                    key_arc,
+                    string_entry.register.origin_replica().clone(),
+                    string_entry.register.value().to_string(),
+                    string_entry.register.timestamp_ms(),
+                    Some(expires_at_ms),
+                )),
+            }
         } else {
-            false
+            None
         }
     }
 
     /// Set expiration using relative TTL in milliseconds.
-    /// Returns true if the key exists and expiration was set.
-    pub fn expire(&self, key: &str, ttl_ms: u64) -> bool {
+    /// Returns a delta for replication if the key exists, None otherwise.
+    pub fn expire(&self, key: &str, ttl_ms: u64) -> Option<Delta> {
         let expires_at = current_time_ms() + ttl_ms;
         self.expire_at(key, expires_at)
     }
 
     /// Remove expiration from a key (make it persistent).
-    /// Returns true if the key exists and had an expiration that was removed.
-    pub fn persist(&self, key: &str) -> bool {
+    /// Returns a delta for replication if the key exists, None otherwise.
+    /// Uses u64::MAX as "never expires" to win with MAX semantics.
+    pub fn persist(&self, key: &str) -> Option<Delta> {
+        let key_arc: Key = Arc::from(key);
         if let Some(mut entry) = self.entries.get_mut(key) {
-            if entry.value().expires_at_ms().is_some() {
-                entry.value_mut().set_expires_at_ms(None);
-                return true;
+            // Skip if already expired
+            if Self::is_entry_expired(entry.value()) {
+                return None;
             }
+
+            // Set to None locally (no expiration)
+            entry.value_mut().set_expires_at_ms(None);
+
+            // Create delta with u64::MAX to win with MAX semantics
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    let component = counter_entry.counter.component(&self.local_replica_id);
+                    Some(Delta::with_type_and_expiration(
+                        key_arc,
+                        self.local_replica_id.clone(),
+                        component,
+                        DeltaType::P,
+                        Some(u64::MAX), // "Never expires" wins over any finite TTL
+                    ))
+                }
+                ValueType::String(string_entry) => Some(Delta::string(
+                    key_arc,
+                    string_entry.register.origin_replica().clone(),
+                    string_entry.register.value().to_string(),
+                    string_entry.register.timestamp_ms(),
+                    Some(u64::MAX),
+                )),
+            }
+        } else {
+            None
         }
-        false
     }
 
     /// Get remaining TTL in milliseconds.
@@ -1187,16 +1251,16 @@ mod tests {
         assert_eq!(store.ttl("k1"), -1);
         assert_eq!(store.pttl("k1"), -1);
 
-        // Set TTL (10 seconds)
-        assert!(store.expire("k1", 10000));
+        // Set TTL (10 seconds) - returns delta
+        assert!(store.expire("k1", 10000).is_some());
 
         // TTL should be positive
         let pttl = store.pttl("k1");
         assert!(pttl > 0 && pttl <= 10000);
 
-        // Non-existent key
+        // Non-existent key - returns None
         assert_eq!(store.ttl("nonexistent"), -2);
-        assert!(!store.expire("nonexistent", 10000));
+        assert!(store.expire("nonexistent", 10000).is_none());
     }
 
     #[test]
@@ -1206,7 +1270,7 @@ mod tests {
 
         // Set absolute expiration 1 second in the future
         let future_ms = current_time_ms() + 1000;
-        assert!(store.expire_at("k1", future_ms));
+        assert!(store.expire_at("k1", future_ms).is_some());
 
         let pttl = store.pttl("k1");
         assert!(pttl > 0 && pttl <= 1000);
@@ -1221,12 +1285,16 @@ mod tests {
         store.expire("k1", 10000);
         assert!(store.pttl("k1") > 0);
 
-        // Persist (remove TTL)
-        assert!(store.persist("k1"));
+        // Persist (remove TTL) - returns delta
+        let delta = store.persist("k1");
+        assert!(delta.is_some());
         assert_eq!(store.pttl("k1"), -1);
 
-        // Persist again - no change
-        assert!(!store.persist("k1"));
+        // Persist on key without TTL still returns delta (for replication)
+        assert!(store.persist("k1").is_some());
+
+        // Persist on non-existent key returns None
+        assert!(store.persist("nonexistent").is_none());
     }
 
     #[test]

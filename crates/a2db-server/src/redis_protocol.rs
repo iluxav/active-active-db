@@ -499,8 +499,15 @@ fn execute_command(
                     return;
                 }
             };
-            let result = store.expire(key, seconds * 1000);
-            let _ = write!(response, ":{}\r\n", if result { 1 } else { 0 });
+            match store.expire(key, seconds * 1000) {
+                Some(delta) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue EXPIRE delta: {}", e);
+                    }
+                    response.push_str(":1\r\n");
+                }
+                None => response.push_str(":0\r\n"),
+            }
         }
 
         "PEXPIRE" => {
@@ -516,8 +523,15 @@ fn execute_command(
                     return;
                 }
             };
-            let result = store.expire(key, ms);
-            let _ = write!(response, ":{}\r\n", if result { 1 } else { 0 });
+            match store.expire(key, ms) {
+                Some(delta) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue PEXPIRE delta: {}", e);
+                    }
+                    response.push_str(":1\r\n");
+                }
+                None => response.push_str(":0\r\n"),
+            }
         }
 
         "EXPIREAT" => {
@@ -533,8 +547,15 @@ fn execute_command(
                     return;
                 }
             };
-            let result = store.expire_at(key, unix_seconds * 1000);
-            let _ = write!(response, ":{}\r\n", if result { 1 } else { 0 });
+            match store.expire_at(key, unix_seconds * 1000) {
+                Some(delta) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue EXPIREAT delta: {}", e);
+                    }
+                    response.push_str(":1\r\n");
+                }
+                None => response.push_str(":0\r\n"),
+            }
         }
 
         "PEXPIREAT" => {
@@ -550,8 +571,15 @@ fn execute_command(
                     return;
                 }
             };
-            let result = store.expire_at(key, unix_ms);
-            let _ = write!(response, ":{}\r\n", if result { 1 } else { 0 });
+            match store.expire_at(key, unix_ms) {
+                Some(delta) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue PEXPIREAT delta: {}", e);
+                    }
+                    response.push_str(":1\r\n");
+                }
+                None => response.push_str(":0\r\n"),
+            }
         }
 
         "PERSIST" => {
@@ -560,8 +588,15 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            let result = store.persist(key);
-            let _ = write!(response, ":{}\r\n", if result { 1 } else { 0 });
+            match store.persist(key) {
+                Some(delta) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue PERSIST delta: {}", e);
+                    }
+                    response.push_str(":1\r\n");
+                }
+                None => response.push_str(":0\r\n"),
+            }
         }
 
         "EXISTS" => {
