@@ -86,6 +86,7 @@ pub struct IdentityConfig {
     pub replica_id: String,
     /// Optional path to persist replica ID for auto-generation
     #[serde(default)]
+    #[allow(dead_code)]
     pub identity_file: Option<String>,
 }
 
@@ -96,12 +97,15 @@ pub struct ReplicationConfig {
     pub peers: Vec<String>,
     /// How often to send batched deltas in milliseconds
     #[serde(default = "default_batch_interval")]
+    #[allow(dead_code)]
     pub batch_interval_ms: u64,
     /// Maximum deltas per batch
     #[serde(default = "default_max_batch_size")]
+    #[allow(dead_code)]
     pub max_batch_size: usize,
     /// Anti-entropy full sync interval in seconds (0 to disable)
     #[serde(default)]
+    #[allow(dead_code)]
     pub anti_entropy_interval_s: u64,
 }
 
@@ -152,19 +156,14 @@ fn default_log_format() -> String {
 }
 
 /// Snapshot format for persistence
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SnapshotFormat {
     /// JSON format - human readable, larger files
     Json,
     /// Bincode format - compact binary, faster (default)
+    #[default]
     Bincode,
-}
-
-impl Default for SnapshotFormat {
-    fn default() -> Self {
-        SnapshotFormat::Bincode
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,12 +255,12 @@ fn default_grace_period() -> u64 {
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
-        let content = fs::read_to_string(&path).map_err(|e| ConfigError::ReadError {
+        let content = fs::read_to_string(&path).map_err(|e| ConfigError::Read {
             path: path.as_ref().display().to_string(),
             source: e,
         })?;
 
-        toml::from_str(&content).map_err(|e| ConfigError::ParseError {
+        toml::from_str(&content).map_err(|e| ConfigError::Parse {
             path: path.as_ref().display().to_string(),
             source: e,
         })
@@ -270,15 +269,15 @@ impl Config {
     /// Create configuration from CLI arguments only (no config file)
     pub fn from_cli(args: &CliArgs) -> Result<Self, ConfigError> {
         let replica_id = args.replica_id.clone().ok_or_else(|| {
-            ConfigError::ValidationError("--replica-id is required when no config file is provided".to_string())
+            ConfigError::Validation("--replica-id is required when no config file is provided".to_string())
         })?;
 
         let client_listen_addr = args.client_addr.clone().ok_or_else(|| {
-            ConfigError::ValidationError("--client-addr is required when no config file is provided".to_string())
+            ConfigError::Validation("--client-addr is required when no config file is provided".to_string())
         })?;
 
         let replication_listen_addr = args.replication_addr.clone().ok_or_else(|| {
-            ConfigError::ValidationError("--replication-addr is required when no config file is provided".to_string())
+            ConfigError::Validation("--replication-addr is required when no config file is provided".to_string())
         })?;
 
         Ok(Self {
@@ -370,19 +369,19 @@ impl Config {
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.identity.replica_id.is_empty() {
-            return Err(ConfigError::ValidationError(
+            return Err(ConfigError::Validation(
                 "replica_id cannot be empty".to_string(),
             ));
         }
 
         if self.server.client_listen_addr.is_empty() {
-            return Err(ConfigError::ValidationError(
+            return Err(ConfigError::Validation(
                 "client_listen_addr cannot be empty".to_string(),
             ));
         }
 
         if self.server.replication_listen_addr.is_empty() {
-            return Err(ConfigError::ValidationError(
+            return Err(ConfigError::Validation(
                 "replication_listen_addr cannot be empty".to_string(),
             ));
         }
@@ -393,27 +392,27 @@ impl Config {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    ReadError {
+    Read {
         path: String,
         source: std::io::Error,
     },
-    ParseError {
+    Parse {
         path: String,
         source: toml::de::Error,
     },
-    ValidationError(String),
+    Validation(String),
 }
 
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigError::ReadError { path, source } => {
+            ConfigError::Read { path, source } => {
                 write!(f, "Failed to read config file '{}': {}", path, source)
             }
-            ConfigError::ParseError { path, source } => {
+            ConfigError::Parse { path, source } => {
                 write!(f, "Failed to parse config file '{}': {}", path, source)
             }
-            ConfigError::ValidationError(msg) => {
+            ConfigError::Validation(msg) => {
                 write!(f, "Configuration validation failed: {}", msg)
             }
         }
