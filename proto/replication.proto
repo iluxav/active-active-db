@@ -61,6 +61,8 @@ message Delta {
   optional string string_value = 6;
   // Timestamp for LWW ordering (for S deltas only, milliseconds since epoch)
   optional uint64 timestamp_ms = 7;
+  // Creation timestamp in milliseconds since Unix epoch (for latency measurement)
+  uint64 created_at_ms = 8;
 }
 
 // A batch of deltas with a sequence number

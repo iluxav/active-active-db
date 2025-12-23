@@ -1,6 +1,15 @@
 use crate::gcounter::{Key, ReplicaId};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Get current time in milliseconds since Unix epoch
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Type of delta operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -33,6 +42,8 @@ pub struct Delta {
     pub string_value: Option<String>,
     /// Timestamp for LWW ordering (for S deltas only)
     pub timestamp_ms: Option<u64>,
+    /// Creation timestamp for latency measurement (milliseconds since Unix epoch)
+    pub created_at_ms: u64,
 }
 
 impl Delta {
@@ -46,6 +57,7 @@ impl Delta {
             expires_at_ms: None,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 
@@ -64,6 +76,7 @@ impl Delta {
             expires_at_ms: None,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 
@@ -82,6 +95,7 @@ impl Delta {
             expires_at_ms,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 
@@ -101,6 +115,7 @@ impl Delta {
             expires_at_ms,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 
@@ -120,6 +135,7 @@ impl Delta {
             expires_at_ms,
             string_value: Some(value),
             timestamp_ms: Some(timestamp_ms),
+            created_at_ms: now_ms(),
         }
     }
 
@@ -133,6 +149,7 @@ impl Delta {
             expires_at_ms: None,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 
@@ -151,6 +168,7 @@ impl Delta {
             expires_at_ms,
             string_value: None,
             timestamp_ms: None,
+            created_at_ms: now_ms(),
         }
     }
 }
@@ -163,6 +181,8 @@ struct CompactedEntry {
     expires_at_ms: Option<u64>,
     string_value: Option<String>,
     timestamp_ms: Option<u64>,
+    /// Earliest creation timestamp (for latency measurement)
+    created_at_ms: u64,
 }
 
 /// Delta buffer for compaction before sending.
@@ -188,6 +208,7 @@ impl DeltaCompactor {
     /// For P/N: Takes MAX of component_value.
     /// For S: Takes entry with higher (timestamp_ms, replica_id).
     /// Always takes MAX of expires_at_ms.
+    /// Keeps MIN of created_at_ms (earliest creation time for latency measurement).
     pub fn add(&mut self, delta: Delta) {
         let key = (
             delta.key.clone(),
@@ -219,12 +240,15 @@ impl DeltaCompactor {
                     (Some(a), Some(b)) => Some(a.max(b)),
                     (exp, None) => exp,
                 };
+                // Keep min of created_at (earliest for latency measurement)
+                entry.created_at_ms = entry.created_at_ms.min(delta.created_at_ms);
             })
             .or_insert(CompactedEntry {
                 component_value: delta.component_value,
                 expires_at_ms: delta.expires_at_ms,
                 string_value: delta.string_value,
                 timestamp_ms: delta.timestamp_ms,
+                created_at_ms: delta.created_at_ms,
             });
     }
 
@@ -248,6 +272,7 @@ impl DeltaCompactor {
                 expires_at_ms: entry.expires_at_ms,
                 string_value: entry.string_value,
                 timestamp_ms: entry.timestamp_ms,
+                created_at_ms: entry.created_at_ms,
             })
             .collect()
     }
@@ -264,6 +289,7 @@ impl DeltaCompactor {
                 expires_at_ms: entry.expires_at_ms,
                 string_value: entry.string_value.clone(),
                 timestamp_ms: entry.timestamp_ms,
+                created_at_ms: entry.created_at_ms,
             })
             .collect()
     }

@@ -35,6 +35,12 @@ pub struct Metrics {
     pub deltas_received_total: AtomicU64,
     pub deltas_send_errors: AtomicU64,
 
+    // Replication latency tracking (milliseconds)
+    pub replication_latency_sum_ms: AtomicU64,
+    pub replication_latency_count: AtomicU64,
+    pub replication_latency_min_ms: AtomicU64,
+    pub replication_latency_max_ms: AtomicU64,
+
     // Store metrics
     pub keys_total: AtomicU64,
 
@@ -64,6 +70,10 @@ impl Metrics {
             deltas_sent_total: AtomicU64::new(0),
             deltas_received_total: AtomicU64::new(0),
             deltas_send_errors: AtomicU64::new(0),
+            replication_latency_sum_ms: AtomicU64::new(0),
+            replication_latency_count: AtomicU64::new(0),
+            replication_latency_min_ms: AtomicU64::new(u64::MAX),
+            replication_latency_max_ms: AtomicU64::new(0),
             keys_total: AtomicU64::new(0),
             start_time: std::time::SystemTime::now(),
         }
@@ -137,6 +147,54 @@ impl Metrics {
         self.deltas_received_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Record replication latency for a received delta
+    pub fn record_replication_latency(&self, latency_ms: u64) {
+        self.replication_latency_sum_ms
+            .fetch_add(latency_ms, Ordering::Relaxed);
+        self.replication_latency_count
+            .fetch_add(1, Ordering::Relaxed);
+
+        // Update min (CAS loop)
+        loop {
+            let current_min = self.replication_latency_min_ms.load(Ordering::Relaxed);
+            if latency_ms >= current_min {
+                break;
+            }
+            if self
+                .replication_latency_min_ms
+                .compare_exchange_weak(
+                    current_min,
+                    latency_ms,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                break;
+            }
+        }
+
+        // Update max (CAS loop)
+        loop {
+            let current_max = self.replication_latency_max_ms.load(Ordering::Relaxed);
+            if latency_ms <= current_max {
+                break;
+            }
+            if self
+                .replication_latency_max_ms
+                .compare_exchange_weak(
+                    current_max,
+                    latency_ms,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+
     pub fn set_keys_total(&self, count: u64) {
         self.keys_total.store(count, Ordering::Relaxed);
     }
@@ -185,10 +243,21 @@ impl Metrics {
                     0
                 },
             },
-            replication: ReplicationMetrics {
-                deltas_sent: self.deltas_sent_total.load(Ordering::Relaxed),
-                deltas_received: self.deltas_received_total.load(Ordering::Relaxed),
-                send_errors: self.deltas_send_errors.load(Ordering::Relaxed),
+            replication: {
+                let latency_count = self.replication_latency_count.load(Ordering::Relaxed);
+                let latency_min = self.replication_latency_min_ms.load(Ordering::Relaxed);
+                ReplicationMetrics {
+                    deltas_sent: self.deltas_sent_total.load(Ordering::Relaxed),
+                    deltas_received: self.deltas_received_total.load(Ordering::Relaxed),
+                    send_errors: self.deltas_send_errors.load(Ordering::Relaxed),
+                    latency_avg_ms: if latency_count > 0 {
+                        self.replication_latency_sum_ms.load(Ordering::Relaxed) / latency_count
+                    } else {
+                        0
+                    },
+                    latency_min_ms: if latency_min == u64::MAX { 0 } else { latency_min },
+                    latency_max_ms: self.replication_latency_max_ms.load(Ordering::Relaxed),
+                }
             },
             store: StoreMetrics {
                 keys: self.keys_total.load(Ordering::Relaxed),
@@ -240,6 +309,9 @@ pub struct ReplicationMetrics {
     pub deltas_sent: u64,
     pub deltas_received: u64,
     pub send_errors: u64,
+    pub latency_avg_ms: u64,
+    pub latency_min_ms: u64,
+    pub latency_max_ms: u64,
 }
 
 #[derive(Serialize)]

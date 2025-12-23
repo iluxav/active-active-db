@@ -6,12 +6,20 @@ use a2db_proto::replication::v1::{
 };
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
 use tracing::{debug, error, info, warn};
+
+/// Get current time in milliseconds since Unix epoch
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
 
 /// Client for connecting to a peer replica and exchanging deltas
 pub struct ReplicationClient {
@@ -191,10 +199,16 @@ impl ReplicationClient {
                                     batch.deltas.len()
                                 );
 
+                                let receive_time = now_ms();
                                 for proto_delta in &batch.deltas {
                                     let delta = from_proto_delta(proto_delta);
                                     store.apply_delta(&delta);
                                     self.metrics.delta_received();
+                                    // Record replication latency if timestamp is valid
+                                    if proto_delta.created_at_ms > 0 {
+                                        let latency = receive_time.saturating_sub(proto_delta.created_at_ms);
+                                        self.metrics.record_replication_latency(latency);
+                                    }
                                 }
 
                                 // Send ack
@@ -244,10 +258,16 @@ impl ReplicationClient {
         let mut count = 0;
         while let Some(result) = stream.next().await {
             match result {
-                Ok(delta) => {
-                    let core_delta = from_proto_delta(&delta);
+                Ok(proto_delta) => {
+                    let receive_time = now_ms();
+                    let core_delta = from_proto_delta(&proto_delta);
                     self.store.apply_delta(&core_delta);
                     self.metrics.delta_received();
+                    // Record replication latency if timestamp is valid
+                    if proto_delta.created_at_ms > 0 {
+                        let latency = receive_time.saturating_sub(proto_delta.created_at_ms);
+                        self.metrics.record_replication_latency(latency);
+                    }
                     count += 1;
                 }
                 Err(e) => {
@@ -300,6 +320,7 @@ fn to_proto_delta(d: &CoreDelta) -> a2db_proto::replication::v1::Delta {
         delta_type: to_proto_delta_type(d.delta_type),
         string_value: d.string_value.clone(),
         timestamp_ms: d.timestamp_ms,
+        created_at_ms: d.created_at_ms,
     }
 }
 
@@ -307,7 +328,7 @@ fn to_proto_delta(d: &CoreDelta) -> a2db_proto::replication::v1::Delta {
 fn from_proto_delta(delta: &a2db_proto::replication::v1::Delta) -> CoreDelta {
     let delta_type = from_proto_delta_type(delta.delta_type);
 
-    match delta_type {
+    let mut core_delta = match delta_type {
         CoreDeltaType::S => CoreDelta::string(
             delta.key.as_str().into(),
             delta.origin_replica_id.as_str().into(),
@@ -322,5 +343,8 @@ fn from_proto_delta(delta: &a2db_proto::replication::v1::Delta) -> CoreDelta {
             delta_type,
             delta.expires_at_ms,
         ),
-    }
+    };
+    // Preserve the original creation timestamp for latency measurement
+    core_delta.created_at_ms = delta.created_at_ms;
+    core_delta
 }
