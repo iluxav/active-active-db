@@ -24,6 +24,39 @@ A high-performance, Redis-compatible, active-active replicated database built on
 - **High Performance** — 500K+ ops/sec on commodity hardware
 - **Persistence** — Periodic snapshots in bincode or JSON format
 
+## Installation
+
+### Download Binary
+
+Download the latest release for your platform:
+
+```bash
+# Linux x86_64
+curl -L https://github.com/iluxav/active-active-db/releases/latest/download/a2db-linux-x86_64.tar.gz | tar xz
+sudo mv a2db /usr/local/bin/
+
+# Linux ARM64
+curl -L https://github.com/iluxav/active-active-db/releases/latest/download/a2db-linux-aarch64.tar.gz | tar xz
+sudo mv a2db /usr/local/bin/
+
+# macOS Intel
+curl -L https://github.com/iluxav/active-active-db/releases/latest/download/a2db-darwin-x86_64.tar.gz | tar xz
+sudo mv a2db /usr/local/bin/
+
+# macOS Apple Silicon
+curl -L https://github.com/iluxav/active-active-db/releases/latest/download/a2db-darwin-aarch64.tar.gz | tar xz
+sudo mv a2db /usr/local/bin/
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/iluxav/active-active-db.git
+cd active-active-db
+cargo build --release
+sudo cp target/release/a2db /usr/local/bin/
+```
+
 ## Quick Start
 
 ### Using Docker
