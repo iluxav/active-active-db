@@ -26,6 +26,14 @@ A high-performance, Redis-compatible, active-active replicated database built on
 
 ## Installation
 
+### Quick Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iluxav/active-active-db/main/install.sh | sh
+```
+
+This auto-detects your OS and architecture.
+
 ### Download Binary
 
 Download the latest release for your platform:
