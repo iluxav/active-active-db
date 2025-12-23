@@ -3,20 +3,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Type of delta operation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DeltaType {
     /// Positive (increment) counter delta
+    #[default]
     P,
     /// Negative (decrement) counter delta
     N,
     /// String value delta (LWW-Register)
     S,
-}
-
-impl Default for DeltaType {
-    fn default() -> Self {
-        DeltaType::P
-    }
 }
 
 /// A single delta representing one component update.
@@ -161,10 +156,10 @@ impl Delta {
 }
 
 /// Compacted entry storing value, expiration, and string data.
+/// Note: delta_type is stored in the hashmap key, not here.
 #[derive(Debug, Clone)]
 struct CompactedEntry {
     component_value: u64,
-    delta_type: DeltaType,
     expires_at_ms: Option<u64>,
     string_value: Option<String>,
     timestamp_ms: Option<u64>,
@@ -221,7 +216,6 @@ impl DeltaCompactor {
             })
             .or_insert(CompactedEntry {
                 component_value: delta.component_value,
-                delta_type: delta.delta_type,
                 expires_at_ms: delta.expires_at_ms,
                 string_value: delta.string_value,
                 timestamp_ms: delta.timestamp_ms,

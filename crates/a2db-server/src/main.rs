@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create the counter store
-    let store = Arc::new(CounterStore::from_str(&config.identity.replica_id));
+    let store = Arc::new(CounterStore::with_replica_id(&config.identity.replica_id));
 
     // Initialize persistence if enabled
     if config.persistence.enabled {

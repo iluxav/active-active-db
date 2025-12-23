@@ -116,8 +116,8 @@ impl CounterStore {
         }
     }
 
-    /// Create from a string slice (convenience method)
-    pub fn from_str(local_replica_id: &str) -> Self {
+    /// Create with a replica ID string (convenience method)
+    pub fn with_replica_id(local_replica_id: &str) -> Self {
         Self::new(Arc::from(local_replica_id))
     }
 
@@ -517,7 +517,7 @@ impl CounterStore {
     pub fn ttl(&self, key: &str) -> i64 {
         let pttl = self.pttl(key);
         if pttl > 0 {
-            (pttl / 1000) as i64
+            pttl / 1000
         } else {
             pttl
         }
@@ -692,14 +692,14 @@ mod tests {
 
     #[test]
     fn test_new_store() {
-        let store = CounterStore::from_str("replica-1");
+        let store = CounterStore::with_replica_id("replica-1");
         assert_eq!(store.local_replica_id().as_ref(), "replica-1");
         assert!(store.is_empty());
     }
 
     #[test]
     fn test_increment_and_get() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         let k = key("counter:foo");
 
         let (value, delta) = store.increment(&k, 5).unwrap();
@@ -718,7 +718,7 @@ mod tests {
 
     #[test]
     fn test_decrement_and_get() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         let k = key("counter:foo");
 
         // Increment first
@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn test_decrement_below_zero() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         let k = key("counter:foo");
 
         store.increment(&k, 5).unwrap();
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_string_set_and_get() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         let delta = store.set_string_str("mykey", "hello".to_string()).unwrap();
         assert_eq!(delta.delta_type, DeltaType::S);
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_type_mismatch_counter_to_string() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         let k = key("mykey");
 
         // Set as counter
@@ -776,7 +776,7 @@ mod tests {
 
     #[test]
     fn test_type_mismatch_string_to_counter() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         let k = key("mykey");
 
         // Set as string
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_get_nonexistent_key() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         assert_eq!(store.get("nonexistent"), 0);
         assert_eq!(store.get_string("nonexistent"), None);
         assert_eq!(store.get_type("nonexistent"), None);
@@ -801,7 +801,7 @@ mod tests {
 
     #[test]
     fn test_mget() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.increment_str("k2", 20);
@@ -813,7 +813,7 @@ mod tests {
 
     #[test]
     fn test_apply_delta() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // Apply P delta from another replica
         let delta = Delta::from_strs("counter:foo", "r2", 100);
@@ -837,7 +837,7 @@ mod tests {
 
     #[test]
     fn test_apply_n_delta() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // First increment
         store.increment_str("k1", 100);
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn test_apply_string_delta() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         let delta = Delta::string(
             key("mykey"),
@@ -868,7 +868,7 @@ mod tests {
 
     #[test]
     fn test_apply_deltas_batch() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         let deltas = vec![
             Delta::from_strs("k1", "r2", 10),
@@ -890,8 +890,8 @@ mod tests {
 
     #[test]
     fn test_convergence_two_replicas() {
-        let store1 = CounterStore::from_str("r1");
-        let store2 = CounterStore::from_str("r2");
+        let store1 = CounterStore::with_replica_id("r1");
+        let store2 = CounterStore::with_replica_id("r2");
 
         // Both replicas increment the same key
         let k = key("shared");
@@ -909,8 +909,8 @@ mod tests {
 
     #[test]
     fn test_convergence_with_decrement() {
-        let store1 = CounterStore::from_str("r1");
-        let store2 = CounterStore::from_str("r2");
+        let store1 = CounterStore::with_replica_id("r1");
+        let store2 = CounterStore::with_replica_id("r2");
 
         let k = key("shared");
 
@@ -928,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_all_deltas() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.decrement_str("k1", 3);
@@ -945,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_key_count_and_keys() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         assert_eq!(store.key_count(), 0);
         assert!(store.keys().is_empty());
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_exists() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         assert!(!store.exists("k1"));
 
@@ -979,7 +979,7 @@ mod tests {
         use std::sync::Arc as StdArc;
         use std::thread;
 
-        let store = StdArc::new(CounterStore::from_str("r1"));
+        let store = StdArc::new(CounterStore::with_replica_id("r1"));
 
         // Pre-populate
         store.increment_str("counter", 1000);
@@ -1008,7 +1008,7 @@ mod tests {
         use std::sync::Arc as StdArc;
         use std::thread;
 
-        let store = StdArc::new(CounterStore::from_str("r1"));
+        let store = StdArc::new(CounterStore::with_replica_id("r1"));
 
         // Spawn multiple writer threads
         let handles: Vec<_> = (0..10)
@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn test_export_snapshot() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.decrement_str("k1", 3);
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_import_snapshot() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // Create a snapshot with some data
         let mut counters = HashMap::new();
@@ -1080,7 +1080,7 @@ mod tests {
 
     #[test]
     fn test_import_snapshot_merges() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // Pre-existing data
         store.increment_str("k1", 100);
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn test_snapshot_roundtrip() {
-        let store1 = CounterStore::from_str("r1");
+        let store1 = CounterStore::with_replica_id("r1");
 
         store1.increment_str("counter:a", 100);
         store1.increment_str("counter:b", 200);
@@ -1115,7 +1115,7 @@ mod tests {
         let json = snapshot.to_json().unwrap();
 
         // Import into new store
-        let store2 = CounterStore::from_str("r2");
+        let store2 = CounterStore::with_replica_id("r2");
         let restored = Snapshot::from_json(&json).unwrap();
         store2.import_snapshot(&restored);
 
@@ -1128,7 +1128,7 @@ mod tests {
 
     #[test]
     fn test_expire_and_ttl() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // Create a key
         store.increment_str("k1", 10);
@@ -1151,7 +1151,7 @@ mod tests {
 
     #[test]
     fn test_expire_at() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         store.increment_str("k1", 10);
 
         // Set absolute expiration 1 second in the future
@@ -1164,7 +1164,7 @@ mod tests {
 
     #[test]
     fn test_persist() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         store.increment_str("k1", 10);
 
         // Set TTL
@@ -1181,7 +1181,7 @@ mod tests {
 
     #[test]
     fn test_expired_key_returns_zero() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         store.increment_str("k1", 10);
 
         // Set expiration in the past
@@ -1195,7 +1195,7 @@ mod tests {
 
     #[test]
     fn test_ttl_merge_takes_max() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
         store.increment_str("k1", 10);
 
         let now = current_time_ms();
@@ -1224,7 +1224,7 @@ mod tests {
 
     #[test]
     fn test_cleanup_expired() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         // Create some keys with past expiration
         store.increment_str("k1", 10);
@@ -1249,7 +1249,7 @@ mod tests {
 
     #[test]
     fn test_keys_excludes_expired() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.increment_str("k2", 20);
@@ -1265,7 +1265,7 @@ mod tests {
 
     #[test]
     fn test_all_deltas_excludes_expired() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.increment_str("k2", 20);
@@ -1281,7 +1281,7 @@ mod tests {
 
     #[test]
     fn test_increment_preserves_ttl() {
-        let store = CounterStore::from_str("r1");
+        let store = CounterStore::with_replica_id("r1");
 
         store.increment_str("k1", 10);
         store.expire("k1", 60000); // 60 seconds

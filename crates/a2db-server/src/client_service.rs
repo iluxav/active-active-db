@@ -107,7 +107,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn create_test_service() -> (CounterServiceImpl, mpsc::Receiver<Delta>) {
-        let store = Arc::new(CounterStore::from_str("test-replica"));
+        let store = Arc::new(CounterStore::with_replica_id("test-replica"));
         let (tx, rx) = mpsc::channel(100);
         (CounterServiceImpl::new(store, tx), rx)
     }
