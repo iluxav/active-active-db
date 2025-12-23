@@ -10,9 +10,9 @@ use clap::Parser;
 use client_service::CounterServiceImpl;
 use config::{CliArgs, Config};
 use persistence::PersistenceManager;
-use counter_core::{CounterStore, Delta};
-use counter_proto::counter::v1::counter_service_server::CounterServiceServer;
-use counter_proto::replication::v1::replication_service_server::ReplicationServiceServer;
+use a2db_core::{CounterStore, Delta};
+use a2db_proto::counter::v1::counter_service_server::CounterServiceServer;
+use a2db_proto::replication::v1::replication_service_server::ReplicationServiceServer;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
 use std::sync::Arc;
@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(
         replica_id = %config.identity.replica_id,
-        "Starting Active-Active Counter Store"
+        "Starting a2db (Active-Active Database)"
     );
 
     // Create the counter store

@@ -1,14 +1,14 @@
 [package]
-name = "counter-server"
+name = "a2db-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "gRPC server for active-active counter store"
+description = "gRPC server for active-active database"
 
 [dependencies]
-counter-core = { path = "../counter-core" }
-counter-proto = { path = "../counter-proto" }
+a2db-core = { path = "../a2db-core" }
+a2db-proto = { path = "../a2db-proto" }
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true
@@ -20,9 +20,9 @@ tracing-subscriber.workspace = true
 clap.workspace = true
 
 [[bin]]
-name = "counter-server"
+name = "a2db"
 path = "src/main.rs"
 
 [[bin]]
-name = "counter-cli"
-path = "src/bin/counter-cli.rs"
+name = "a2db-cli"
+path = "src/bin/a2db-cli.rs"

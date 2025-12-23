@@ -1,5 +1,5 @@
 use crate::config::{PersistenceConfig, SnapshotFormat};
-use counter_core::{CounterStore, Snapshot, SnapshotError};
+use a2db_core::{CounterStore, Snapshot, SnapshotError};
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};

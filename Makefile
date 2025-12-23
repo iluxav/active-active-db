@@ -20,10 +20,10 @@ build-release:
 # =============================================================================
 
 run: build
-	cargo run --bin counter-server -- config/single-node.toml
+	cargo run --bin a2db -- --config config/single-node.toml
 
 run-release: build-release
-	./target/release/counter-server config/single-node.toml
+	./target/release/a2db --config config/single-node.toml
 
 # =============================================================================
 # Test
@@ -57,16 +57,16 @@ check: fmt clippy test
 
 bench: build-release
 	@echo "Starting server..."
-	@./target/release/counter-server config/single-node.toml &
+	@./target/release/a2db --config config/single-node.toml &
 	@sleep 2
 	@echo "Running benchmarks..."
 	@redis-benchmark -p 16379 -t incr -n 100000 -c 50 -r 10000 -q || true
 	@echo "Stopping server..."
-	@pkill -f "counter-server" || true
+	@pkill -f "a2db" || true
 
 bench-pipeline: build-release
 	@echo "Starting server..."
-	@./target/release/counter-server config/single-node.toml &
+	@./target/release/a2db --config config/single-node.toml &
 	@sleep 2
 	@echo "Pipeline 1:"
 	@redis-benchmark -p 16379 -t incr -n 200000 -c 100 -r 100000 -P 1 -q || true
@@ -75,47 +75,47 @@ bench-pipeline: build-release
 	@echo "Pipeline 100:"
 	@redis-benchmark -p 16379 -t incr -n 200000 -c 100 -r 100000 -P 100 -q || true
 	@echo "Stopping server..."
-	@pkill -f "counter-server" || true
+	@pkill -f "a2db" || true
 
 # =============================================================================
-# Docker - Counter-DB
+# Docker - a2db
 # =============================================================================
 
 docker-build:
-	docker compose build counter-db
+	docker compose build a2db
 
 docker-up: docker-build
-	docker compose up -d counter-db
+	docker compose up -d a2db
 	@echo "Waiting for server..."
 	@until redis-cli -p 16379 PING 2>/dev/null | grep -q PONG; do sleep 1; done
-	@echo "Counter-DB is ready on port 16379"
+	@echo "a2db is ready on port 16379"
 
 docker-down:
 	docker compose down
 
 docker-logs:
-	docker compose logs -f counter-db
+	docker compose logs -f a2db
 
 docker-bench: docker-up
-	@echo "=== Counter-DB Docker Benchmark ==="
+	@echo "=== a2db Docker Benchmark ==="
 	@docker run --rm --network active-active-db_default redis:7-alpine \
-		redis-benchmark -h counter-db -p 16379 -t incr -n 200000 -c 50 -r 100000 -q
+		redis-benchmark -h a2db -p 16379 -t incr -n 200000 -c 50 -r 100000 -q
 
 docker-bench-full: docker-up
-	@echo "=== Counter-DB Full Benchmark Suite ==="
+	@echo "=== a2db Full Benchmark Suite ==="
 	@echo ""
 	@echo "--- Concurrency Test ---"
 	@for c in 1 10 50 100 200 500; do \
 		echo "Clients: $$c"; \
 		docker run --rm --network active-active-db_default redis:7-alpine \
-			redis-benchmark -h counter-db -p 16379 -t incr -n 100000 -c $$c -r 100000 -q 2>&1 | grep "requests per second"; \
+			redis-benchmark -h a2db -p 16379 -t incr -n 100000 -c $$c -r 100000 -q 2>&1 | grep "requests per second"; \
 	done
 	@echo ""
 	@echo "--- Pipeline Test ---"
 	@for p in 1 10 50 100; do \
 		echo "Pipeline: $$p"; \
 		docker run --rm --network active-active-db_default redis:7-alpine \
-			redis-benchmark -h counter-db -p 16379 -t incr -n 200000 -c 100 -r 100000 -P $$p -q 2>&1 | grep "requests per second"; \
+			redis-benchmark -h a2db -p 16379 -t incr -n 200000 -c 100 -r 100000 -P $$p -q 2>&1 | grep "requests per second"; \
 	done
 
 # =============================================================================
@@ -154,22 +154,22 @@ redis-bench-full: redis-up
 	done
 
 # =============================================================================
-# Compare Counter-DB vs Redis
+# Compare a2db vs Redis
 # =============================================================================
 
 compare:
-	@echo "=== Performance Comparison: Counter-DB vs Redis ==="
+	@echo "=== Performance Comparison: a2db vs Redis ==="
 	@echo ""
-	@echo "Building Counter-DB..."
-	@docker compose build counter-db > /dev/null 2>&1
+	@echo "Building a2db..."
+	@docker compose build a2db > /dev/null 2>&1
 	@echo ""
-	@echo "--- Counter-DB ---"
-	@docker compose up -d counter-db > /dev/null 2>&1
+	@echo "--- a2db ---"
+	@docker compose up -d a2db > /dev/null 2>&1
 	@sleep 3
 	@docker run --rm --network active-active-db_default redis:7-alpine \
-		redis-benchmark -h counter-db -p 16379 -t incr -n 200000 -c 100 -r 100000 -q 2>&1 | grep "requests per second"
+		redis-benchmark -h a2db -p 16379 -t incr -n 200000 -c 100 -r 100000 -q 2>&1 | grep "requests per second"
 	@docker run --rm --network active-active-db_default redis:7-alpine \
-		redis-benchmark -h counter-db -p 16379 -t incr -n 200000 -c 100 -r 100000 -P 100 -q 2>&1 | grep "requests per second"
+		redis-benchmark -h a2db -p 16379 -t incr -n 200000 -c 100 -r 100000 -P 100 -q 2>&1 | grep "requests per second"
 	@docker compose down > /dev/null 2>&1
 	@echo ""
 	@echo "--- Redis ---"
@@ -196,7 +196,7 @@ clean:
 # =============================================================================
 
 help:
-	@echo "Counter-DB Makefile"
+	@echo "a2db (Active-Active Database) Makefile"
 	@echo ""
 	@echo "Build:"
 	@echo "  make build          - Build debug version"
@@ -212,9 +212,9 @@ help:
 	@echo "  make check          - Run fmt, clippy, and tests"
 	@echo ""
 	@echo "Docker:"
-	@echo "  make docker-up      - Start Counter-DB in Docker"
-	@echo "  make docker-down    - Stop Counter-DB"
-	@echo "  make docker-logs    - View Counter-DB logs"
+	@echo "  make docker-up      - Start a2db in Docker"
+	@echo "  make docker-down    - Stop a2db"
+	@echo "  make docker-logs    - View a2db logs"
 	@echo "  make docker-bench   - Quick benchmark in Docker"
 	@echo "  make docker-bench-full - Full benchmark suite"
 	@echo ""
@@ -224,7 +224,7 @@ help:
 	@echo "  make redis-bench    - Quick Redis benchmark"
 	@echo ""
 	@echo "Compare:"
-	@echo "  make compare        - Run Counter-DB vs Redis comparison"
+	@echo "  make compare        - Run a2db vs Redis comparison"
 	@echo ""
 	@echo "Clean:"
 	@echo "  make clean          - Remove build artifacts and data"

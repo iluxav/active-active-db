@@ -1,5 +1,5 @@
-use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
-use counter_proto::replication::v1::{
+use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
+use a2db_proto::replication::v1::{
     replication_service_client::ReplicationServiceClient, AntiEntropyRequest, DeltaBatch,
     DeltaType, Handshake, ReplicationMessage, replication_message::Message,
 };
@@ -191,7 +191,7 @@ impl ReplicationClient {
                                 // Send ack
                                 let ack = ReplicationMessage {
                                     message: Some(Message::Ack(
-                                        counter_proto::replication::v1::Ack {
+                                        a2db_proto::replication::v1::Ack {
                                             sequence: batch.sequence,
                                         },
                                     )),
@@ -283,8 +283,8 @@ fn from_proto_delta_type(dt: i32) -> CoreDeltaType {
 }
 
 /// Convert core Delta to proto Delta
-fn to_proto_delta(d: &CoreDelta) -> counter_proto::replication::v1::Delta {
-    counter_proto::replication::v1::Delta {
+fn to_proto_delta(d: &CoreDelta) -> a2db_proto::replication::v1::Delta {
+    a2db_proto::replication::v1::Delta {
         key: d.key.to_string(),
         origin_replica_id: d.origin_replica_id.to_string(),
         component_value: d.component_value,
@@ -296,7 +296,7 @@ fn to_proto_delta(d: &CoreDelta) -> counter_proto::replication::v1::Delta {
 }
 
 /// Convert proto Delta to core Delta
-fn from_proto_delta(delta: &counter_proto::replication::v1::Delta) -> CoreDelta {
+fn from_proto_delta(delta: &a2db_proto::replication::v1::Delta) -> CoreDelta {
     let delta_type = from_proto_delta_type(delta.delta_type);
 
     match delta_type {

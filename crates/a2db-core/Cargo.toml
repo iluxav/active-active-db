@@ -1,10 +1,10 @@
 [package]
-name = "counter-core"
+name = "a2db-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Core CRDT logic for active-active counter store"
+description = "Core CRDT logic for active-active database"
 
 [dependencies]
 serde = { workspace = true, features = ["rc"] }

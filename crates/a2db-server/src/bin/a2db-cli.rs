@@ -1,4 +1,4 @@
-use counter_proto::counter::v1::{
+use a2db_proto::counter::v1::{
     counter_service_client::CounterServiceClient, GetRequest, IncrByRequest, MGetRequest,
 };
 use std::env;
@@ -13,14 +13,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Get server address from environment or use default
-    let addr = env::var("COUNTER_ADDR").unwrap_or_else(|_| "http://127.0.0.1:9000".to_string());
+    let addr = env::var("A2DB_ADDR").unwrap_or_else(|_| "http://127.0.0.1:9000".to_string());
 
     let mut client = CounterServiceClient::connect(addr.clone()).await?;
 
     match args[1].as_str() {
         "incr" | "incrby" => {
             if args.len() < 3 {
-                eprintln!("Usage: counter-cli incr <key> [amount]");
+                eprintln!("Usage: a2db-cli incr <key> [amount]");
                 return Ok(());
             }
             let key = &args[2];
@@ -38,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         "get" => {
             if args.len() < 3 {
-                eprintln!("Usage: counter-cli get <key>");
+                eprintln!("Usage: a2db-cli get <key>");
                 return Ok(());
             }
             let key = &args[2];
@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         "mget" => {
             if args.len() < 3 {
-                eprintln!("Usage: counter-cli mget <key1> <key2> ...");
+                eprintln!("Usage: a2db-cli mget <key1> <key2> ...");
                 return Ok(());
             }
             let keys: Vec<String> = args[2..].to_vec();
@@ -74,21 +74,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn print_usage() {
     eprintln!(
-        r#"Active-Active Counter Store CLI
+        r#"Active-Active Database CLI
 
 Usage:
-  counter-cli incr <key> [amount]   Increment counter (default amount: 1)
-  counter-cli get <key>             Get counter value
-  counter-cli mget <key1> <key2>... Get multiple counter values
+  a2db-cli incr <key> [amount]   Increment counter (default amount: 1)
+  a2db-cli get <key>             Get counter value
+  a2db-cli mget <key1> <key2>... Get multiple counter values
 
 Environment:
-  COUNTER_ADDR   Server address (default: http://127.0.0.1:9000)
+  A2DB_ADDR   Server address (default: http://127.0.0.1:9000)
 
 Examples:
-  counter-cli incr requests:api:2024 5
-  counter-cli get requests:api:2024
-  counter-cli mget errors:svc1 errors:svc2 errors:svc3
+  a2db-cli incr requests:api:2024 5
+  a2db-cli get requests:api:2024
+  a2db-cli mget errors:svc1 errors:svc2 errors:svc3
 
-  COUNTER_ADDR=http://localhost:9010 counter-cli get mykey"#
+  A2DB_ADDR=http://localhost:9010 a2db-cli get mykey"#
     );
 }

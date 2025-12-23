@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/counter-core",
-    "crates/counter-proto",
-    "crates/counter-server",
+    "crates/a2db-core",
+    "crates/a2db-proto",
+    "crates/a2db-server",
 ]
 
 [workspace.package]

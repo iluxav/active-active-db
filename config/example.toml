@@ -1,4 +1,4 @@
-# Active-Active Counter Store Configuration
+# Active-Active Database (a2db) Configuration
 # Copy this file to config.toml and customize for your deployment
 
 [server]
@@ -15,14 +15,14 @@ replication_listen_addr = "0.0.0.0:9001"
 replica_id = "us-west-2-replica-1"
 
 # Optional: path to persist auto-generated replica ID
-# identity_file = "/var/lib/counter-store/identity"
+# identity_file = "/var/lib/a2db/identity"
 
 [replication]
 # Peer replicas to connect to for bidirectional delta sync
 # Each peer should be the replication address of another replica
 peers = [
-    # "http://eu-west-1.counter.internal:9001",
-    # "http://us-east-1.counter.internal:9001",
+    # "http://eu-west-1.a2db.internal:9001",
+    # "http://us-east-1.a2db.internal:9001",
 ]
 
 # How often to flush batched deltas to peers (milliseconds)

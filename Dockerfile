@@ -1,4 +1,4 @@
-# Multi-stage build for counter-server
+# Multi-stage build for a2db
 FROM rust:1.83-slim as builder
 
 WORKDIR /app
@@ -21,12 +21,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binary and config
-COPY --from=builder /app/target/release/counter-server /usr/local/bin/
-COPY --from=builder /app/config/bench-persist.toml /etc/counter-server/config.toml
+COPY --from=builder /app/target/release/a2db /usr/local/bin/
+COPY --from=builder /app/config/bench-persist.toml /etc/a2db/config.toml
 
 # Create data directory
 RUN mkdir -p /data
 
 EXPOSE 16379 19000 19001
 
-CMD ["counter-server", "/etc/counter-server/config.toml"]
+CMD ["a2db", "--config", "/etc/a2db/config.toml"]

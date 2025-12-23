@@ -1,9 +1,9 @@
 version: "3.8"
 
 services:
-  counter-db:
+  a2db:
     build: .
-    container_name: counter-db
+    container_name: a2db
     ports:
       - "16379:16379" # Redis protocol (16379 to avoid conflict with real Redis)
       - "19000:19000" # gRPC client

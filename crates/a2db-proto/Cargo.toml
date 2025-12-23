@@ -1,10 +1,10 @@
 [package]
-name = "counter-proto"
+name = "a2db-proto"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Protobuf definitions for active-active counter store"
+description = "Protobuf definitions for active-active database"
 
 [dependencies]
 tonic.workspace = true

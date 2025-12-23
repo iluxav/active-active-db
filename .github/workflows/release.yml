@@ -19,27 +19,27 @@ jobs:
           # Linux x86_64
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact_name: counter-server
-            asset_name: counter-server-linux-x86_64
+            artifact_name: a2db
+            asset_name: a2db-linux-x86_64
 
           # Linux ARM64
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact_name: counter-server
-            asset_name: counter-server-linux-aarch64
+            artifact_name: a2db
+            asset_name: a2db-linux-aarch64
             cross: true
 
           # macOS x86_64
           - target: x86_64-apple-darwin
             os: macos-latest
-            artifact_name: counter-server
-            asset_name: counter-server-darwin-x86_64
+            artifact_name: a2db
+            asset_name: a2db-darwin-x86_64
 
           # macOS ARM64 (Apple Silicon)
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact_name: counter-server
-            asset_name: counter-server-darwin-aarch64
+            artifact_name: a2db
+            asset_name: a2db-darwin-aarch64
 
     steps:
       - name: Checkout

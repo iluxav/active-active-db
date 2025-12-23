@@ -1,5 +1,5 @@
-use counter_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
-use counter_proto::replication::v1::{
+use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
+use a2db_proto::replication::v1::{
     replication_service_server::ReplicationService, Ack, AntiEntropyRequest, Delta, DeltaBatch,
     DeltaType, Handshake, ReplicationMessage, replication_message::Message,
 };

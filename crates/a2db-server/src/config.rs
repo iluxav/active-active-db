@@ -3,54 +3,54 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-/// Command-line arguments for the counter server
+/// Command-line arguments for the a2db server
 #[derive(Parser, Debug)]
-#[command(name = "counter-server")]
-#[command(about = "Active-Active Counter Store Server", long_about = None)]
+#[command(name = "a2db")]
+#[command(about = "Active-Active Database Server", long_about = None)]
 #[command(version)]
 pub struct CliArgs {
     /// Path to TOML configuration file (optional if all required args provided)
-    #[arg(short, long, env = "COUNTER_CONFIG")]
+    #[arg(short, long, env = "A2DB_CONFIG")]
     pub config: Option<String>,
 
     /// Unique replica ID for this instance
-    #[arg(long, env = "COUNTER_REPLICA_ID")]
+    #[arg(long, env = "A2DB_REPLICA_ID")]
     pub replica_id: Option<String>,
 
     /// gRPC client listen address (e.g., 0.0.0.0:9000)
-    #[arg(long, env = "COUNTER_CLIENT_ADDR")]
+    #[arg(long, env = "A2DB_CLIENT_ADDR")]
     pub client_addr: Option<String>,
 
     /// Replication listen address (e.g., 0.0.0.0:9001)
-    #[arg(long, env = "COUNTER_REPLICATION_ADDR")]
+    #[arg(long, env = "A2DB_REPLICATION_ADDR")]
     pub replication_addr: Option<String>,
 
     /// Redis-compatible listen address (e.g., 0.0.0.0:6379)
-    #[arg(long, env = "COUNTER_REDIS_ADDR")]
+    #[arg(long, env = "A2DB_REDIS_ADDR")]
     pub redis_addr: Option<String>,
 
     /// Peer replica addresses for replication (can be specified multiple times)
-    #[arg(long = "peer", env = "COUNTER_PEERS", value_delimiter = ',')]
+    #[arg(long = "peer", env = "A2DB_PEERS", value_delimiter = ',')]
     pub peers: Option<Vec<String>>,
 
     /// Enable persistence
-    #[arg(long, env = "COUNTER_PERSISTENCE")]
+    #[arg(long, env = "A2DB_PERSISTENCE")]
     pub persistence: bool,
 
     /// Data directory for persistence
-    #[arg(long, env = "COUNTER_DATA_DIR")]
+    #[arg(long, env = "A2DB_DATA_DIR")]
     pub data_dir: Option<String>,
 
     /// Snapshot interval in seconds
-    #[arg(long, env = "COUNTER_SNAPSHOT_INTERVAL")]
+    #[arg(long, env = "A2DB_SNAPSHOT_INTERVAL")]
     pub snapshot_interval: Option<u64>,
 
     /// Log level (trace, debug, info, warn, error)
-    #[arg(long, env = "COUNTER_LOG_LEVEL", default_value = "info")]
+    #[arg(long, env = "A2DB_LOG_LEVEL", default_value = "info")]
     pub log_level: String,
 
     /// Log format (pretty, json)
-    #[arg(long, env = "COUNTER_LOG_FORMAT", default_value = "pretty")]
+    #[arg(long, env = "A2DB_LOG_FORMAT", default_value = "pretty")]
     pub log_format: String,
 }
 
@@ -452,7 +452,7 @@ mod tests {
 
             [identity]
             replica_id = "us-west-2-replica-1"
-            identity_file = "/var/lib/counter-store/identity"
+            identity_file = "/var/lib/a2db/identity"
 
             [replication]
             peers = ["https://eu-west-1:9001", "https://us-east-1:9001"]
@@ -504,14 +504,14 @@ mod tests {
 
             [persistence]
             enabled = true
-            data_dir = "/var/lib/counter-store/data"
+            data_dir = "/var/lib/a2db/data"
             snapshot_interval_s = 10
             snapshot_retain_count = 5
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.persistence.enabled);
-        assert_eq!(config.persistence.data_dir, "/var/lib/counter-store/data");
+        assert_eq!(config.persistence.data_dir, "/var/lib/a2db/data");
         assert_eq!(config.persistence.snapshot_interval_s, 10);
         assert_eq!(config.persistence.snapshot_retain_count, 5);
     }

@@ -1,5 +1,5 @@
-use counter_core::{CounterStore, Delta};
-use counter_proto::counter::v1::{
+use a2db_core::{CounterStore, Delta};
+use a2db_proto::counter::v1::{
     counter_service_server::CounterService, GetRequest, GetResponse, IncrByRequest,
     IncrByResponse, MGetRequest, MGetResponse,
 };

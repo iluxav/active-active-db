@@ -1,4 +1,4 @@
-use counter_core::{CounterStore, Delta};
+use a2db_core::{CounterStore, Delta};
 use std::io;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, BufWriter as TokioBufWriter};
@@ -377,7 +377,7 @@ fn execute_command(
 
         "INFO" => {
             let info = format!(
-                "# Server\r\nredis_version:counter-store-1.0\r\n# Keyspace\r\nkeys:{}\r\nreplica_id:{}\r\n",
+                "# Server\r\nredis_version:a2db-1.0\r\n# Keyspace\r\nkeys:{}\r\nreplica_id:{}\r\n",
                 store.key_count(),
                 store.local_replica_id()
             );

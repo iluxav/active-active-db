@@ -1,4 +1,4 @@
-use counter_core::CounterStore;
+use a2db_core::CounterStore;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info};
