@@ -9,7 +9,8 @@ pub type ReplicaId = Arc<str>;
 pub type Key = Arc<str>;
 
 /// Maximum number of replicas stored inline (before heap allocation)
-const INLINE_REPLICAS: usize = 4;
+/// Set to 6 to accommodate typical 3-5 replica deployments without heap allocation
+const INLINE_REPLICAS: usize = 6;
 
 /// A PN-Counter (positive-negative counter) CRDT.
 ///
@@ -19,12 +20,27 @@ const INLINE_REPLICAS: usize = 4;
 ///
 /// This allows both increment and decrement operations while maintaining
 /// CRDT properties for conflict-free replication.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Performance optimization: caches the total value for O(1) reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GCounter {
     /// P (positive) components: increments
     p_components: SmallVec<[(ReplicaId, u64); INLINE_REPLICAS]>,
     /// N (negative) components: decrements
     n_components: SmallVec<[(ReplicaId, u64); INLINE_REPLICAS]>,
+    /// Cached total value (p_sum - n_sum) for O(1) reads
+    #[serde(skip)]
+    cached_value: i64,
+}
+
+impl Default for GCounter {
+    fn default() -> Self {
+        Self {
+            p_components: SmallVec::new(),
+            n_components: SmallVec::new(),
+            cached_value: 0,
+        }
+    }
 }
 
 impl GCounter {
@@ -43,7 +59,11 @@ impl GCounter {
 
     /// Increment the counter for a specific replica.
     /// Returns the new P component value for that replica.
+    #[inline]
     pub fn increment(&mut self, replica_id: &ReplicaId, amount: u64) -> u64 {
+        // Update cached value - O(1)
+        self.cached_value = self.cached_value.saturating_add(amount as i64);
+
         if let Some(idx) = Self::find_replica(&self.p_components, replica_id) {
             let entry = &mut self.p_components[idx].1;
             *entry = entry.saturating_add(amount);
@@ -56,7 +76,11 @@ impl GCounter {
 
     /// Decrement the counter for a specific replica.
     /// Returns the new N component value for that replica.
+    #[inline]
     pub fn decrement(&mut self, replica_id: &ReplicaId, amount: u64) -> u64 {
+        // Update cached value - O(1)
+        self.cached_value = self.cached_value.saturating_sub(amount as i64);
+
         if let Some(idx) = Self::find_replica(&self.n_components, replica_id) {
             let entry = &mut self.n_components[idx].1;
             *entry = entry.saturating_add(amount);
@@ -69,11 +93,19 @@ impl GCounter {
 
     /// Get the total value (sum of P components - sum of N components)
     /// Returns signed value to handle cases where decrements exceed increments
+    /// O(1) - uses cached value
     #[inline]
     pub fn value(&self) -> i64 {
+        self.cached_value
+    }
+
+    /// Recompute the cached value from components.
+    /// Call this after deserialization or when loading from snapshot.
+    #[inline]
+    pub fn recompute_cached_value(&mut self) {
         let p_sum: u64 = self.p_components.iter().map(|(_, v)| v).sum();
         let n_sum: u64 = self.n_components.iter().map(|(_, v)| v).sum();
-        (p_sum as i64).saturating_sub(n_sum as i64)
+        self.cached_value = (p_sum as i64).saturating_sub(n_sum as i64);
     }
 
     /// Get the total value as u64 (clamped to 0 if negative)
@@ -133,20 +165,31 @@ impl GCounter {
             }
         }
 
+        // Recompute cached value after merge
+        if changed {
+            self.recompute_cached_value();
+        }
+
         changed
     }
 
     /// Apply a P (increment) delta.
     /// Returns true if the value was updated.
+    #[inline]
     pub fn apply_p_delta(&mut self, replica_id: &ReplicaId, value: u64) -> bool {
         if let Some(idx) = Self::find_replica(&self.p_components, replica_id) {
-            if value > self.p_components[idx].1 {
+            let old_value = self.p_components[idx].1;
+            if value > old_value {
+                // Update cached value incrementally
+                self.cached_value = self.cached_value.saturating_add((value - old_value) as i64);
                 self.p_components[idx].1 = value;
                 true
             } else {
                 false
             }
         } else {
+            // New replica - add to cache
+            self.cached_value = self.cached_value.saturating_add(value as i64);
             self.p_components.push((replica_id.clone(), value));
             true
         }
@@ -154,15 +197,21 @@ impl GCounter {
 
     /// Apply an N (decrement) delta.
     /// Returns true if the value was updated.
+    #[inline]
     pub fn apply_n_delta(&mut self, replica_id: &ReplicaId, value: u64) -> bool {
         if let Some(idx) = Self::find_replica(&self.n_components, replica_id) {
-            if value > self.n_components[idx].1 {
+            let old_value = self.n_components[idx].1;
+            if value > old_value {
+                // Update cached value incrementally (N subtracts from total)
+                self.cached_value = self.cached_value.saturating_sub((value - old_value) as i64);
                 self.n_components[idx].1 = value;
                 true
             } else {
                 false
             }
         } else {
+            // New replica - subtract from cache
+            self.cached_value = self.cached_value.saturating_sub(value as i64);
             self.n_components.push((replica_id.clone(), value));
             true
         }

@@ -1,5 +1,5 @@
 use crate::gcounter::{Key, ReplicaId};
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
 /// Type of delta operation
@@ -171,10 +171,12 @@ struct CompactedEntry {
 ///
 /// This is critical for efficiency: if a key is incremented 1000 times/second,
 /// we only need to send the final value, not all intermediate values.
+/// DeltaCompactor uses FxHashMap for faster hashing of keys.
+/// FxHashMap is ~30% faster than std HashMap for small keys.
 #[derive(Debug, Default)]
 pub struct DeltaCompactor {
     /// Map: (key, replica_id, delta_type) -> compacted entry
-    pending: HashMap<(Key, ReplicaId, DeltaType), CompactedEntry>,
+    pending: FxHashMap<(Key, ReplicaId, DeltaType), CompactedEntry>,
 }
 
 impl DeltaCompactor {

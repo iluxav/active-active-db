@@ -56,7 +56,10 @@ impl StringEntry {
 }
 
 /// Value type stored in the database
+/// Note: Counter variant is larger due to SmallVec and cached_value optimization.
+/// We allow this because boxing would add indirection in the hot path.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ValueType {
     Counter(CounterEntry),
     String(StringEntry),
