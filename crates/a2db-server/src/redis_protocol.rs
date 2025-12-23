@@ -4,7 +4,8 @@ use std::io;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::io::{
-    AsyncBufReadExt, AsyncWriteExt, BufReader as TokioBufReader, BufWriter as TokioBufWriter,
+    AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader as TokioBufReader,
+    BufWriter as TokioBufWriter,
 };
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -167,16 +168,28 @@ async fn handle_resp_command(
             return Ok(());
         }
 
-        // Read the actual string
-        line.clear();
-        reader.read_line(&mut line).await?;
+        // Parse the bulk string length
+        let len: usize = line
+            .trim()
+            .trim_start_matches('$')
+            .parse()
+            .unwrap_or(0);
+
+        // Read exactly `len` bytes of data
+        let mut buf = vec![0u8; len];
+        reader.read_exact(&mut buf).await?;
+        let value = String::from_utf8_lossy(&buf).into_owned();
+
+        // Read and discard the trailing \r\n
+        let mut crlf = [0u8; 2];
+        reader.read_exact(&mut crlf).await?;
 
         // Reuse existing String capacity if available
         if i < prev_len {
             args[i].clear();
-            args[i].push_str(line.trim());
+            args[i].push_str(&value);
         } else {
-            args.push(line.trim().to_string());
+            args.push(value);
         }
     }
     // Truncate extra elements from previous larger commands

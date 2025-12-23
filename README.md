@@ -65,6 +65,16 @@ cargo build --release
 sudo cp target/release/a2db /usr/local/bin/
 ```
 
+### Running
+
+```bash
+nohup a2db --replica-id "node1" --client-addr "0.0.0.0:9000" --replication-addr "0.0.0.0:9001" --redis-addr "0.0.0.0:6379" --peer http://64.23.155.53:9001 --persistence --data-dir "./data" --metrics-addr "0.0.0.0:9090" > a2db.log 2>&1 &
+```
+
+```bash
+nohup a2db --replica-id "node2" --client-addr "0.0.0.0:9000" --replication-addr "0.0.0.0:9001" --redis-addr "0.0.0.0:6379" --peer http://104.248.21.132:9001 --persistence --data-dir "./data" --metrics-addr "0.0.0.0:9090" > a2db.log 2>&1 &
+```
+
 ## Quick Start
 
 ### Using Docker
