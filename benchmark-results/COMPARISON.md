@@ -1,6 +1,6 @@
 # Redis vs Counter-DB Comparison
 
-## === a2db Full Benchmark Suite Last Run ===
+## === a2db Full Benchmark Suite Last Run Before the optimization===
 
 --- Concurrency Test ---
 Clients: 1
@@ -25,6 +25,32 @@ Pipeline: 50
 INCR: 529100.56 requests per second, p50=9.239 msec  
 Pipeline: 100
 INCR: 563380.31 requests per second, p50=17.247 msec
+
+## === a2db Full Benchmark Suite after the optimization with the match instead of if-else ===
+
+--- Concurrency Test ---
+Clients: 1
+INCR: 17828.49 requests per second, p50=0.055 msec  
+Clients: 10
+INCR: 170940.17 requests per second, p50=0.039 msec  
+Clients: 50
+INCR: 179533.22 requests per second, p50=0.135 msec  
+Clients: 100
+INCR: 196850.39 requests per second, p50=0.239 msec  
+Clients: 200
+INCR: 197628.47 requests per second, p50=0.471 msec  
+Clients: 500
+INCR: 186219.73 requests per second, p50=1.255 msec
+
+--- Pipeline Test ---
+Pipeline: 1
+INCR: 208333.34 requests per second, p50=0.223 msec  
+Pipeline: 10
+INCR: 1176470.62 requests per second, p50=0.623 msec  
+Pipeline: 50
+INCR: 722021.62 requests per second, p50=5.839 msec  
+Pipeline: 100
+INCR: 754717.00 requests per second, p50=9.615 msec
 
 ## === Redis Full Benchmark Suite ===
 

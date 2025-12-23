@@ -84,6 +84,8 @@ async fn handle_connection(
     let mut writer = TokioBufWriter::with_capacity(65536, writer);
     let mut line = String::with_capacity(256);
     let mut response_buf = String::with_capacity(4096);
+    // Reuse args buffer across commands to reduce allocations
+    let mut args: Vec<String> = Vec::with_capacity(8);
 
     loop {
         line.clear();
@@ -103,11 +105,12 @@ async fn handle_connection(
                 &delta_tx,
                 &mut response_buf,
                 &metrics,
+                &mut args,
             )
             .await?;
         } else {
             // Inline command format (telnet-style)
-            handle_inline_command(&line, &store, &delta_tx, &mut response_buf, &metrics).await;
+            handle_inline_command(&line, &store, &delta_tx, &mut response_buf, &metrics, &mut args);
         }
 
         writer.write_all(response_buf.as_bytes()).await?;
@@ -121,6 +124,7 @@ async fn handle_connection(
 }
 
 /// Handle RESP protocol array command
+/// Reuses the args buffer to reduce allocations
 async fn handle_resp_command(
     reader: &mut TokioBufReader<tokio::net::tcp::OwnedReadHalf>,
     first_line: &str,
@@ -128,6 +132,7 @@ async fn handle_resp_command(
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
     metrics: &Arc<Metrics>,
+    args: &mut Vec<String>,
 ) -> io::Result<()> {
     // Parse array length: *N
     let count: usize = first_line
@@ -141,11 +146,11 @@ async fn handle_resp_command(
         return Ok(());
     }
 
-    // Read all arguments - reuse a single buffer
-    let mut args: Vec<String> = Vec::with_capacity(count);
+    // Reuse args buffer - ensure capacity and work with existing Strings
+    let prev_len = args.len();
     let mut line = String::with_capacity(64);
 
-    for _ in 0..count {
+    for i in 0..count {
         line.clear();
         reader.read_line(&mut line).await?;
 
@@ -158,11 +163,20 @@ async fn handle_resp_command(
         // Read the actual string
         line.clear();
         reader.read_line(&mut line).await?;
-        args.push(line.trim().to_string());
+
+        // Reuse existing String capacity if available
+        if i < prev_len {
+            args[i].clear();
+            args[i].push_str(line.trim());
+        } else {
+            args.push(line.trim().to_string());
+        }
     }
+    // Truncate extra elements from previous larger commands
+    args.truncate(count);
 
     let start = Instant::now();
-    execute_command(&args, store, delta_tx, response, metrics);
+    execute_command(args, store, delta_tx, response, metrics);
     if !args.is_empty() {
         metrics.record_command(&args[0], start);
     }
@@ -170,24 +184,40 @@ async fn handle_resp_command(
 }
 
 /// Handle inline command (telnet-style)
-async fn handle_inline_command(
+/// Reuses the args buffer to reduce allocations
+fn handle_inline_command(
     line: &str,
     store: &Arc<CounterStore>,
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
     metrics: &Arc<Metrics>,
+    args: &mut Vec<String>,
 ) {
-    let args: Vec<String> = line.split_whitespace().map(|s| s.to_string()).collect();
+    // Reuse args buffer
+    let prev_len = args.len();
+    let mut i = 0;
+    for part in line.split_whitespace() {
+        if i < prev_len {
+            args[i].clear();
+            args[i].push_str(part);
+        } else {
+            args.push(part.to_string());
+        }
+        i += 1;
+    }
+    args.truncate(i);
+
     if args.is_empty() {
         response.push_str("-ERR empty command\r\n");
         return;
     }
     let start = Instant::now();
-    execute_command(&args, store, delta_tx, response, metrics);
+    execute_command(args, store, delta_tx, response, metrics);
     metrics.record_command(&args[0], start);
 }
 
 /// Execute a parsed command - writes response directly to buffer
+/// Uses match statement for efficient command dispatch (compiler optimizes to jump table)
 fn execute_command(
     args: &[String],
     store: &Arc<CounterStore>,
@@ -202,52 +232,10 @@ fn execute_command(
         return;
     }
 
+    // to_uppercase + match is faster than if-else chain with eq_ignore_ascii_case
+    // because the compiler optimizes match into a jump table
     let cmd = args[0].to_uppercase();
     match cmd.as_str() {
-        "PING" => response.push_str("+PONG\r\n"),
-
-        "QUIT" => response.push_str("+OK\r\n"),
-
-        "INCRBY" => {
-            if args.len() < 3 {
-                response.push_str("-ERR wrong number of arguments for 'incrby' command\r\n");
-                return;
-            }
-            let key = &args[1];
-            let amount: i64 = match args[2].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    response.push_str("-ERR value is not an integer or out of range\r\n");
-                    return;
-                }
-            };
-
-            if amount < 0 {
-                // Use DECRBY for negative values
-                response.push_str(
-                    "-ERR INCRBY only supports positive values, use DECRBY for decrement\r\n",
-                );
-                return;
-            }
-
-            match store.increment_str(key, amount as u64) {
-                Some((value, delta)) => {
-                    if let Err(e) = delta_tx.try_send(delta) {
-                        tracing::warn!("Failed to queue INCRBY delta: {}", e);
-                        metrics.delta_send_error();
-                    } else {
-                        metrics.delta_sent();
-                    }
-                    let _ = write!(response, ":{}\r\n", value);
-                }
-                None => {
-                    response.push_str(
-                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-                    );
-                }
-            }
-        }
-
         "INCR" => {
             if args.len() < 2 {
                 response.push_str("-ERR wrong number of arguments for 'incr' command\r\n");
@@ -272,9 +260,28 @@ fn execute_command(
             }
         }
 
-        "DECRBY" => {
+        "GET" => {
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'get' command\r\n");
+                return;
+            }
+            let key = &args[1];
+            if let Some(value) = store.get_string(key) {
+                let _ = write!(response, "${}\r\n{}\r\n", value.len(), value);
+            } else {
+                let value = store.get(key);
+                if value != 0 || store.exists(key) {
+                    let value_str = value.to_string();
+                    let _ = write!(response, "${}\r\n{}\r\n", value_str.len(), value_str);
+                } else {
+                    response.push_str("$-1\r\n");
+                }
+            }
+        }
+
+        "INCRBY" => {
             if args.len() < 3 {
-                response.push_str("-ERR wrong number of arguments for 'decrby' command\r\n");
+                response.push_str("-ERR wrong number of arguments for 'incrby' command\r\n");
                 return;
             }
             let key = &args[1];
@@ -285,18 +292,16 @@ fn execute_command(
                     return;
                 }
             };
-
             if amount < 0 {
                 response.push_str(
-                    "-ERR DECRBY only supports positive values, use INCRBY for increment\r\n",
+                    "-ERR INCRBY only supports positive values, use DECRBY for decrement\r\n",
                 );
                 return;
             }
-
-            match store.decrement_str(key, amount as u64) {
+            match store.increment_str(key, amount as u64) {
                 Some((value, delta)) => {
                     if let Err(e) = delta_tx.try_send(delta) {
-                        tracing::warn!("Failed to queue DECRBY delta: {}", e);
+                        tracing::warn!("Failed to queue INCRBY delta: {}", e);
                         metrics.delta_send_error();
                     } else {
                         metrics.delta_sent();
@@ -335,43 +340,46 @@ fn execute_command(
             }
         }
 
-        "GET" => {
-            if args.len() < 2 {
-                response.push_str("-ERR wrong number of arguments for 'get' command\r\n");
+        "DECRBY" => {
+            if args.len() < 3 {
+                response.push_str("-ERR wrong number of arguments for 'decrby' command\r\n");
                 return;
             }
             let key = &args[1];
-
-            // Check if it's a string first
-            if let Some(value) = store.get_string(key) {
-                let _ = write!(response, "${}\r\n{}\r\n", value.len(), value);
-            } else {
-                // It's either a counter or doesn't exist
-                let value = store.get(key);
-                if value != 0 || store.exists(key) {
-                    // Return counter value as string (Redis-compatible)
-                    let value_str = value.to_string();
-                    let _ = write!(response, "${}\r\n{}\r\n", value_str.len(), value_str);
-                } else {
-                    // Key doesn't exist
-                    response.push_str("$-1\r\n");
+            let amount: i64 = match args[2].parse() {
+                Ok(n) => n,
+                Err(_) => {
+                    response.push_str("-ERR value is not an integer or out of range\r\n");
+                    return;
+                }
+            };
+            if amount < 0 {
+                response.push_str(
+                    "-ERR DECRBY only supports positive values, use INCRBY for increment\r\n",
+                );
+                return;
+            }
+            match store.decrement_str(key, amount as u64) {
+                Some((value, delta)) => {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue DECRBY delta: {}", e);
+                        metrics.delta_send_error();
+                    } else {
+                        metrics.delta_sent();
+                    }
+                    let _ = write!(response, ":{}\r\n", value);
+                }
+                None => {
+                    response.push_str(
+                        "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+                    );
                 }
             }
         }
 
-        "MGET" => {
-            if args.len() < 2 {
-                response.push_str("-ERR wrong number of arguments for 'mget' command\r\n");
-                return;
-            }
-            let keys: Vec<String> = args[1..].to_vec();
-            let values = store.mget(&keys);
+        "PING" => response.push_str("+PONG\r\n"),
 
-            let _ = write!(response, "*{}\r\n", values.len());
-            for value in values {
-                let _ = write!(response, ":{}\r\n", value);
-            }
-        }
+        "QUIT" => response.push_str("+OK\r\n"),
 
         "SET" => {
             if args.len() < 3 {
@@ -380,7 +388,6 @@ fn execute_command(
             }
             let key = &args[1];
             let value = &args[2];
-
             match store.set_string_str(key, value.clone()) {
                 Some(delta) => {
                     if let Err(e) = delta_tx.try_send(delta) {
@@ -399,6 +406,19 @@ fn execute_command(
             }
         }
 
+        "MGET" => {
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'mget' command\r\n");
+                return;
+            }
+            let keys: Vec<String> = args[1..].to_vec();
+            let values = store.mget(&keys);
+            let _ = write!(response, "*{}\r\n", values.len());
+            for value in values {
+                let _ = write!(response, ":{}\r\n", value);
+            }
+        }
+
         "SETNX" => {
             if args.len() < 3 {
                 response.push_str("-ERR wrong number of arguments for 'setnx' command\r\n");
@@ -406,8 +426,6 @@ fn execute_command(
             }
             let key = &args[1];
             let value = &args[2];
-
-            // Only set if key doesn't exist
             if !store.exists(key) {
                 match store.set_string_str(key, value.clone()) {
                     Some(delta) => {
@@ -418,9 +436,7 @@ fn execute_command(
                         }
                         response.push_str(":1\r\n");
                     }
-                    None => {
-                        response.push_str(":0\r\n");
-                    }
+                    None => response.push_str(":0\r\n"),
                 }
             } else {
                 response.push_str(":0\r\n");
@@ -434,12 +450,9 @@ fn execute_command(
             }
             let key = &args[1];
             let append_value = &args[2];
-
-            // Get existing string or start with empty
             let existing = store.get_string(key).unwrap_or_default();
             let new_value = format!("{}{}", existing, append_value);
             let new_len = new_value.len();
-
             match store.set_string_str(key, new_value) {
                 Some(delta) => {
                     if delta_tx.try_send(delta).is_ok() {
@@ -486,27 +499,21 @@ fn execute_command(
             }
         }
 
-        "COMMAND" => {
-            response.push_str("*0\r\n");
-        }
+        "COMMAND" => response.push_str("*0\r\n"),
 
         "SCAN" => {
             let cursor: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
             let count: usize = 100;
-
             let all_keys = store.keys();
             let total = all_keys.len();
-
             let start = cursor;
             let end = std::cmp::min(start + count, total);
             let next_cursor = if end >= total { 0 } else { end };
-
             let keys_slice: Vec<_> = if start < total {
                 all_keys.iter().skip(start).take(count).collect()
             } else {
                 vec![]
             };
-
             let cursor_str = next_cursor.to_string();
             let _ = write!(
                 response,
@@ -527,9 +534,7 @@ fn execute_command(
             }
             let key = &args[1];
             match store.get_type(key) {
-                Some("counter") => response.push_str("+string\r\n"), // Redis reports counters as strings
-                Some("string") => response.push_str("+string\r\n"),
-                Some(_) => response.push_str("+string\r\n"),
+                Some("counter") | Some("string") | Some(_) => response.push_str("+string\r\n"),
                 None => response.push_str("+none\r\n"),
             }
         }
@@ -702,11 +707,9 @@ fn execute_command(
                 return;
             }
             let key = &args[1];
-            // Check for string first
             if let Some(value) = store.get_string(key) {
                 let _ = write!(response, ":{}\r\n", value.len());
             } else {
-                // It's either a counter or doesn't exist
                 let value = store.get(key);
                 if value != 0 || store.exists(key) {
                     let len = value.to_string().len();
@@ -726,9 +729,7 @@ fn execute_command(
             let _ = write!(response, "${}\r\n{}\r\n", msg.len(), msg);
         }
 
-        "SELECT" => {
-            response.push_str("+OK\r\n");
-        }
+        "SELECT" => response.push_str("+OK\r\n"),
 
         "FLUSHDB" | "FLUSHALL" => {
             response.push_str("-ERR FLUSH not supported (G-Counter is grow-only)\r\n");
@@ -772,7 +773,6 @@ fn execute_command(
                     let key = &args[2];
                     match store.debug_counter_state(key) {
                         Some((p_components, n_components, value, expires_at_ms)) => {
-                            // Format as bulk string with details
                             let mut info = format!("Key: {}\n", key);
                             info.push_str(&format!("Value: {}\n", value));
                             info.push_str(&format!(
@@ -792,12 +792,11 @@ fn execute_command(
                             let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
                         }
                         None => {
-                            // Check if it's a string
                             if let Some(val) = store.get_string(key) {
                                 let info = format!("Key: {}\nType: string\nValue: {}\n", key, val);
                                 let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
                             } else {
-                                response.push_str("$-1\r\n"); // nil - key not found
+                                response.push_str("$-1\r\n");
                             }
                         }
                     }
@@ -806,9 +805,7 @@ fn execute_command(
                     let info = format!("Local replica ID: {}\n", store.local_replica_id());
                     let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
                 }
-                _ => {
-                    response.push_str("+OK\r\n");
-                }
+                _ => response.push_str("+OK\r\n"),
             }
         }
 

@@ -99,9 +99,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create channels for delta distribution
     // mpsc channel for client service -> replication broadcast
-    let (delta_tx, mut delta_rx) = mpsc::channel::<Delta>(10000);
+    // 100K capacity reduces backpressure at high concurrency
+    let (delta_tx, mut delta_rx) = mpsc::channel::<Delta>(100_000);
     // broadcast channel for replication to all peers
-    let (broadcast_tx, _) = broadcast::channel::<Delta>(10000);
+    let (broadcast_tx, _) = broadcast::channel::<Delta>(100_000);
 
     // Spawn task to forward deltas from client service to broadcast
     let broadcast_tx_clone = broadcast_tx.clone();
