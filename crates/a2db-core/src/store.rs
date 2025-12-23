@@ -636,6 +636,49 @@ impl CounterStore {
         }
     }
 
+    /// Delete a key by setting its expiration to the past.
+    /// Returns a delta for replication if the key existed, None otherwise.
+    /// The key will be cleaned up by the expiration cleanup task.
+    ///
+    /// Note: In CRDT semantics, this uses TTL's MAX merge rule. If another replica
+    /// has a later expiration or does PERSIST, the key may "revive". This is
+    /// consistent with last-writer-wins semantics.
+    pub fn delete(&self, key: &str) -> Option<Delta> {
+        let key_arc: Key = Arc::from(key);
+        if let Some(mut entry) = self.entries.get_mut(key) {
+            // Skip if already expired
+            if Self::is_entry_expired(entry.value()) {
+                return None;
+            }
+
+            // Set expiration to 1 (effectively expired - epoch + 1ms is in 1970)
+            entry.value_mut().set_expires_at_ms(Some(1));
+
+            // Create delta with expires_at_ms = 1 to replicate deletion
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    let component = counter_entry.counter.component(&self.local_replica_id);
+                    Some(Delta::with_type_and_expiration(
+                        key_arc,
+                        self.local_replica_id.clone(),
+                        component,
+                        DeltaType::P,
+                        Some(1), // Expired timestamp
+                    ))
+                }
+                ValueType::String(string_entry) => Some(Delta::string(
+                    key_arc,
+                    string_entry.register.origin_replica().clone(),
+                    string_entry.register.value().to_string(),
+                    string_entry.register.timestamp_ms(),
+                    Some(1), // Expired timestamp
+                )),
+            }
+        } else {
+            None
+        }
+    }
+
     /// Get remaining TTL in milliseconds.
     /// Returns: remaining ms (positive), -1 (no TTL), or -2 (key not found/expired)
     pub fn pttl(&self, key: &str) -> i64 {

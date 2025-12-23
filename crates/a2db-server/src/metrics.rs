@@ -19,6 +19,7 @@ pub struct Metrics {
     pub cmd_set_total: AtomicU64,
     pub cmd_mget_total: AtomicU64,
     pub cmd_expire_total: AtomicU64,
+    pub cmd_del_total: AtomicU64,
     pub cmd_ttl_total: AtomicU64,
     pub cmd_keys_total: AtomicU64,
     pub cmd_ping_total: AtomicU64,
@@ -59,6 +60,7 @@ impl Metrics {
             cmd_set_total: AtomicU64::new(0),
             cmd_mget_total: AtomicU64::new(0),
             cmd_expire_total: AtomicU64::new(0),
+            cmd_del_total: AtomicU64::new(0),
             cmd_ttl_total: AtomicU64::new(0),
             cmd_keys_total: AtomicU64::new(0),
             cmd_ping_total: AtomicU64::new(0),
@@ -105,8 +107,11 @@ impl Metrics {
             "MGET" => {
                 self.cmd_mget_total.fetch_add(1, Ordering::Relaxed);
             }
-            "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" => {
+            "EXPIRE" | "PEXPIRE" | "EXPIREAT" | "PEXPIREAT" | "PERSIST" => {
                 self.cmd_expire_total.fetch_add(1, Ordering::Relaxed);
+            }
+            "DEL" => {
+                self.cmd_del_total.fetch_add(1, Ordering::Relaxed);
             }
             "TTL" | "PTTL" => {
                 self.cmd_ttl_total.fetch_add(1, Ordering::Relaxed);
@@ -220,6 +225,7 @@ impl Metrics {
                 set: self.cmd_set_total.load(Ordering::Relaxed),
                 mget: self.cmd_mget_total.load(Ordering::Relaxed),
                 expire: self.cmd_expire_total.load(Ordering::Relaxed),
+                del: self.cmd_del_total.load(Ordering::Relaxed),
                 ttl: self.cmd_ttl_total.load(Ordering::Relaxed),
                 keys: self.cmd_keys_total.load(Ordering::Relaxed),
                 ping: self.cmd_ping_total.load(Ordering::Relaxed),
@@ -290,6 +296,7 @@ pub struct CommandMetrics {
     pub set: u64,
     pub mget: u64,
     pub expire: u64,
+    pub del: u64,
     pub ttl: u64,
     pub keys: u64,
     pub ping: u64,
@@ -370,7 +377,10 @@ impl MetricsServer {
                 );
 
                 if let Err(e) = socket.write_all(response.as_bytes()).await {
-                    error!("Failed to write metrics response: {}", e);
+                    // BrokenPipe is expected when client disconnects early - don't log as error
+                    if e.kind() != std::io::ErrorKind::BrokenPipe {
+                        error!("Failed to write metrics response: {}", e);
+                    }
                 }
             });
         }

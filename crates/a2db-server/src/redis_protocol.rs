@@ -464,7 +464,21 @@ fn execute_command(
         }
 
         "DEL" | "DELETE" => {
-            response.push_str("-ERR DELETE not supported (CRDT is grow-only)\r\n");
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'del' command\r\n");
+                return;
+            }
+            let mut deleted = 0;
+            for key in &args[1..] {
+                if let Some(delta) = store.delete(key) {
+                    if let Err(e) = delta_tx.try_send(delta) {
+                        tracing::warn!("Failed to queue DEL delta: {}", e);
+                        metrics.delta_send_error();
+                    }
+                    deleted += 1;
+                }
+            }
+            let _ = write!(response, ":{}\r\n", deleted);
         }
 
         "INFO" => {
