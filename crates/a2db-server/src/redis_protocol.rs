@@ -12,6 +12,128 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
+/// Fast glob pattern matcher for Redis-style patterns
+/// Supports: * (any sequence), ? (single char), [abc] (char class), [a-z] (range)
+/// Compiled once and reused for matching multiple keys
+#[derive(Clone)]
+enum GlobToken {
+    Literal(char),
+    Any,           // *
+    Single,        // ?
+    CharClass(Vec<(char, char)>, bool), // [abc] or [^abc], ranges stored as (start, end)
+}
+
+struct GlobPattern {
+    tokens: Vec<GlobToken>,
+}
+
+impl GlobPattern {
+    /// Compile a glob pattern into tokens for fast matching
+    fn compile(pattern: &str) -> Self {
+        let mut tokens = Vec::with_capacity(pattern.len());
+        let mut chars = pattern.chars().peekable();
+
+        while let Some(c) = chars.next() {
+            match c {
+                '*' => tokens.push(GlobToken::Any),
+                '?' => tokens.push(GlobToken::Single),
+                '[' => {
+                    let mut ranges = Vec::new();
+                    let negated = chars.peek() == Some(&'^');
+                    if negated {
+                        chars.next();
+                    }
+
+                    while let Some(&ch) = chars.peek() {
+                        if ch == ']' {
+                            chars.next();
+                            break;
+                        }
+                        let start = chars.next().unwrap();
+                        if chars.peek() == Some(&'-') {
+                            chars.next(); // consume '-'
+                            if let Some(end) = chars.next() {
+                                if end != ']' {
+                                    ranges.push((start, end));
+                                    continue;
+                                }
+                            }
+                        }
+                        ranges.push((start, start));
+                    }
+                    tokens.push(GlobToken::CharClass(ranges, negated));
+                }
+                '\\' => {
+                    // Escape next character
+                    if let Some(escaped) = chars.next() {
+                        tokens.push(GlobToken::Literal(escaped));
+                    }
+                }
+                _ => tokens.push(GlobToken::Literal(c)),
+            }
+        }
+
+        Self { tokens }
+    }
+
+    /// Check if a string matches this pattern
+    #[inline]
+    fn matches(&self, s: &str) -> bool {
+        self.match_recursive(&self.tokens, s.as_bytes())
+    }
+
+    fn match_recursive(&self, tokens: &[GlobToken], s: &[u8]) -> bool {
+        if tokens.is_empty() {
+            return s.is_empty();
+        }
+
+        match &tokens[0] {
+            GlobToken::Literal(c) => {
+                if s.is_empty() || s[0] != *c as u8 {
+                    return false;
+                }
+                self.match_recursive(&tokens[1..], &s[1..])
+            }
+            GlobToken::Single => {
+                if s.is_empty() {
+                    return false;
+                }
+                self.match_recursive(&tokens[1..], &s[1..])
+            }
+            GlobToken::Any => {
+                // Try matching zero or more characters
+                if self.match_recursive(&tokens[1..], s) {
+                    return true;
+                }
+                if !s.is_empty() {
+                    return self.match_recursive(tokens, &s[1..]);
+                }
+                false
+            }
+            GlobToken::CharClass(ranges, negated) => {
+                if s.is_empty() {
+                    return false;
+                }
+                let ch = s[0] as char;
+                let mut in_class = false;
+                for (start, end) in ranges {
+                    if ch >= *start && ch <= *end {
+                        in_class = true;
+                        break;
+                    }
+                }
+                if *negated {
+                    in_class = !in_class;
+                }
+                if !in_class {
+                    return false;
+                }
+                self.match_recursive(&tokens[1..], &s[1..])
+            }
+        }
+    }
+}
+
 /// Redis-compatible protocol server
 /// Supports: INCR, INCRBY, DECR, DECRBY, GET, SET, MGET, PING, QUIT, TTL, EXPIRE, and more
 pub struct RedisServer {
@@ -525,13 +647,31 @@ fn execute_command(
         }
 
         "KEYS" => {
-            if args.len() < 2 || args[1] != "*" {
-                response.push_str("-ERR only KEYS * is supported\r\n");
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'keys' command\r\n");
                 return;
             }
-            let keys = store.keys();
-            let _ = write!(response, "*{}\r\n", keys.len());
-            for key in keys {
+            let pattern_str = &args[1];
+            let all_keys = store.keys();
+
+            // Limit to prevent OOM on huge keyspaces
+            const MAX_KEYS: usize = 10000;
+
+            let matched: Vec<_> = if pattern_str == "*" {
+                // Fast path: no filtering needed
+                all_keys.iter().take(MAX_KEYS).collect()
+            } else {
+                // Compile pattern once, filter all keys
+                let pattern = GlobPattern::compile(pattern_str);
+                all_keys
+                    .iter()
+                    .filter(|k| pattern.matches(k.as_ref()))
+                    .take(MAX_KEYS)
+                    .collect()
+            };
+
+            let _ = write!(response, "*{}\r\n", matched.len());
+            for key in matched {
                 let _ = write!(response, "${}\r\n{}\r\n", key.len(), key);
             }
         }
@@ -539,18 +679,78 @@ fn execute_command(
         "COMMAND" => response.push_str("*0\r\n"),
 
         "SCAN" => {
+            // Parse: SCAN cursor [MATCH pattern] [COUNT count]
             let cursor: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
-            let count: usize = 100;
+            let mut count: usize = 100;
+            let mut pattern: Option<GlobPattern> = None;
+
+            // Parse optional MATCH and COUNT arguments
+            let mut i = 2;
+            while i < args.len() {
+                match args[i].to_uppercase().as_str() {
+                    "MATCH" => {
+                        if i + 1 < args.len() {
+                            let pat = &args[i + 1];
+                            // Only compile pattern if it's not just "*"
+                            if pat != "*" {
+                                pattern = Some(GlobPattern::compile(pat));
+                            }
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    "COUNT" => {
+                        if i + 1 < args.len() {
+                            count = args[i + 1].parse().unwrap_or(100);
+                            // Clamp count to reasonable bounds
+                            count = count.clamp(1, 10000);
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    _ => i += 1,
+                }
+            }
+
             let all_keys = store.keys();
             let total = all_keys.len();
-            let start = cursor;
-            let end = std::cmp::min(start + count, total);
-            let next_cursor = if end >= total { 0 } else { end };
-            let keys_slice: Vec<_> = if start < total {
-                all_keys.iter().skip(start).take(count).collect()
+
+            // With pattern: we need to scan from cursor, filtering as we go
+            // Without pattern: simple slice
+            let (matched_keys, next_cursor) = if let Some(ref pat) = pattern {
+                // Filter keys matching pattern, starting from cursor position
+                // We scan through keys, collecting matches until we have 'count' or run out
+                let mut matched = Vec::with_capacity(count);
+                let mut last_pos = cursor;
+
+                for (idx, key) in all_keys.iter().enumerate().skip(cursor) {
+                    if pat.matches(key.as_ref()) {
+                        matched.push(key);
+                        if matched.len() >= count {
+                            last_pos = idx + 1;
+                            break;
+                        }
+                    }
+                    last_pos = idx + 1;
+                }
+
+                let next = if last_pos >= total { 0 } else { last_pos };
+                (matched, next)
             } else {
-                vec![]
+                // No pattern - simple pagination
+                let start = cursor;
+                let end = std::cmp::min(start + count, total);
+                let next = if end >= total { 0 } else { end };
+                let keys: Vec<_> = if start < total {
+                    all_keys.iter().skip(start).take(count).collect()
+                } else {
+                    vec![]
+                };
+                (keys, next)
             };
+
             let cursor_str = next_cursor.to_string();
             let _ = write!(
                 response,
@@ -558,8 +758,8 @@ fn execute_command(
                 cursor_str.len(),
                 next_cursor
             );
-            let _ = write!(response, "*{}\r\n", keys_slice.len());
-            for key in keys_slice {
+            let _ = write!(response, "*{}\r\n", matched_keys.len());
+            for key in matched_keys {
                 let _ = write!(response, "${}\r\n{}\r\n", key.len(), key);
             }
         }
