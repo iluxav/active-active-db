@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,16 +30,16 @@ jobs:
             cross: true
 
           # macOS x86_64
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            artifact_name: a2db
-            asset_name: a2db-darwin-x86_64
+          # - target: x86_64-apple-darwin
+          #   os: macos-latest
+          #   artifact_name: a2db
+          #   asset_name: a2db-darwin-x86_64
 
-          # macOS ARM64 (Apple Silicon)
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            artifact_name: a2db
-            asset_name: a2db-darwin-aarch64
+          # # macOS ARM64 (Apple Silicon)
+          # - target: aarch64-apple-darwin
+          #   os: macos-latest
+          #   artifact_name: a2db
+          #   asset_name: a2db-darwin-aarch64
 
     steps:
       - name: Checkout

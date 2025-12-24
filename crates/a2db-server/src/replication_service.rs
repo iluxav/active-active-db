@@ -373,6 +373,24 @@ impl ReplicationService for ReplicationServiceImpl {
 
         // Add all known peers from the registry (if available)
         if let Some(ref registry) = self.peer_registry {
+            // First, add the joining node to our registry so we know about them
+            let joining_peer = GossipPeerInfo::new(
+                Arc::from(req.replica_id.as_str()),
+                req.replication_addr.clone(),
+                req.incarnation,
+            );
+            let replica_id_key: Arc<str> = Arc::from(req.replica_id.as_str());
+
+            // Only add if not ourselves
+            if req.replica_id != self.store.local_replica_id().as_ref() {
+                registry.insert(replica_id_key, joining_peer);
+                info!(
+                    "Added joining node {} to peer registry",
+                    req.replica_id
+                );
+            }
+
+            // Now return all known peers (including the one we just added)
             for entry in registry.iter() {
                 let peer = entry.value();
                 peers.push(peer.to_proto());
