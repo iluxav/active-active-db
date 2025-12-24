@@ -95,6 +95,20 @@ sudo cp target/release/a2db /usr/local/bin/
     --metrics-addr "0.0.0.0:9090"
 ```
 
+```
+Node 3 (10.114.0.4):
+  a2db --replica-id "node3" \
+    --replication-addr "0.0.0.0:9001" \
+    --redis-addr "0.0.0.0:6379" \
+    --discovery \
+    --seed "http://10.114.0.2:9001" \
+    --seed "http://10.124.0.3:9001" \
+    --advertise-addr "http://10.114.0.4:9001" \
+    --persistence \
+    --data-dir "./data" \
+    --metrics-addr "0.0.0.0:9090"
+```
+
 ```bashnohup a2db --replica-id "node1" --client-addr "0.0.0.0:9000" --replication-addr "0.0.0.0:9001" --redis-addr "0.0.0.0:6379" --peer http://64.23.155.53:9001 --persistence --data-dir "./data" --metrics-addr "0.0.0.0:9090" > a2db.log 2>&1 &
 
 ```

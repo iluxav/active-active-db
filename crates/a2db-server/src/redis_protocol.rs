@@ -1,3 +1,4 @@
+use crate::gossip::SharedPeerRegistry;
 use crate::metrics::Metrics;
 use a2db_core::{CounterStore, Delta};
 use std::io;
@@ -17,6 +18,7 @@ pub struct RedisServer {
     store: Arc<CounterStore>,
     delta_tx: mpsc::Sender<Delta>,
     metrics: Arc<Metrics>,
+    peer_registry: Option<SharedPeerRegistry>,
 }
 
 impl RedisServer {
@@ -29,12 +31,20 @@ impl RedisServer {
             store,
             delta_tx,
             metrics,
+            peer_registry: None,
         }
+    }
+
+    pub fn with_peer_registry(mut self, registry: SharedPeerRegistry) -> Self {
+        self.peer_registry = Some(registry);
+        self
     }
 
     pub async fn serve(self, addr: &str) -> io::Result<()> {
         let listener = TcpListener::bind(addr).await?;
         info!("Redis-compatible server listening on {}", addr);
+
+        let peer_registry = self.peer_registry;
 
         loop {
             let (socket, peer_addr) = listener.accept().await?;
@@ -43,12 +53,13 @@ impl RedisServer {
             let store = Arc::clone(&self.store);
             let delta_tx = self.delta_tx.clone();
             let metrics = Arc::clone(&self.metrics);
+            let peers = peer_registry.clone();
 
             metrics.connection_opened();
 
             tokio::spawn(async move {
                 if let Err(e) =
-                    handle_connection(socket, store, delta_tx, Arc::clone(&metrics)).await
+                    handle_connection(socket, store, delta_tx, Arc::clone(&metrics), peers).await
                 {
                     if !is_connection_closed(&e) {
                         error!("Connection error from {}: {}", peer_addr, e);
@@ -76,6 +87,7 @@ async fn handle_connection(
     store: Arc<CounterStore>,
     delta_tx: mpsc::Sender<Delta>,
     metrics: Arc<Metrics>,
+    peer_registry: Option<SharedPeerRegistry>,
 ) -> io::Result<()> {
     // Disable Nagle's algorithm for lower latency
     socket.set_nodelay(true)?;
@@ -107,6 +119,7 @@ async fn handle_connection(
                 &mut response_buf,
                 &metrics,
                 &mut args,
+                &peer_registry,
             )
             .await?;
         } else {
@@ -118,6 +131,7 @@ async fn handle_connection(
                 &mut response_buf,
                 &metrics,
                 &mut args,
+                &peer_registry,
             );
         }
 
@@ -141,6 +155,7 @@ async fn handle_resp_command(
     response: &mut String,
     metrics: &Arc<Metrics>,
     args: &mut Vec<String>,
+    peer_registry: &Option<SharedPeerRegistry>,
 ) -> io::Result<()> {
     // Parse array length: *N
     let count: usize = first_line
@@ -196,7 +211,7 @@ async fn handle_resp_command(
     args.truncate(count);
 
     let start = Instant::now();
-    execute_command(args, store, delta_tx, response, metrics);
+    execute_command(args, store, delta_tx, response, metrics, peer_registry);
     if !args.is_empty() {
         metrics.record_command(&args[0], start);
     }
@@ -212,6 +227,7 @@ fn handle_inline_command(
     response: &mut String,
     metrics: &Arc<Metrics>,
     args: &mut Vec<String>,
+    peer_registry: &Option<SharedPeerRegistry>,
 ) {
     // Reuse args buffer
     let prev_len = args.len();
@@ -232,7 +248,7 @@ fn handle_inline_command(
         return;
     }
     let start = Instant::now();
-    execute_command(args, store, delta_tx, response, metrics);
+    execute_command(args, store, delta_tx, response, metrics, peer_registry);
     metrics.record_command(&args[0], start);
 }
 
@@ -244,6 +260,7 @@ fn execute_command(
     delta_tx: &mpsc::Sender<Delta>,
     response: &mut String,
     metrics: &Arc<Metrics>,
+    peer_registry: &Option<SharedPeerRegistry>,
 ) {
     use std::fmt::Write;
 
@@ -838,6 +855,61 @@ fn execute_command(
                 response.push_str("+int\r\n");
             } else {
                 response.push_str("$-1\r\n");
+            }
+        }
+
+        "CLUSTER" => {
+            if args.len() < 2 {
+                response.push_str("-ERR wrong number of arguments for 'cluster' command\r\n");
+                return;
+            }
+            match args[1].to_uppercase().as_str() {
+                "PEERS" => {
+                    // Return list of known peers from gossip registry
+                    match peer_registry {
+                        Some(registry) => {
+                            let peers: Vec<_> = registry.iter().collect();
+                            let _ = write!(response, "*{}\r\n", peers.len());
+                            for peer in peers {
+                                let info = format!(
+                                    "{}|{}|{:?}",
+                                    peer.replica_id,
+                                    peer.replication_addr,
+                                    peer.state
+                                );
+                                let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                            }
+                        }
+                        None => {
+                            response.push_str("-ERR discovery not enabled\r\n");
+                        }
+                    }
+                }
+                "INFO" => {
+                    // Return cluster info as bulk string
+                    match peer_registry {
+                        Some(registry) => {
+                            let peer_count = registry.len();
+                            let replica_id = store.local_replica_id();
+                            let info = format!(
+                                "replica_id:{}\npeer_count:{}\n",
+                                replica_id, peer_count
+                            );
+                            let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                        }
+                        None => {
+                            let replica_id = store.local_replica_id();
+                            let info = format!(
+                                "replica_id:{}\npeer_count:0\ndiscovery:disabled\n",
+                                replica_id
+                            );
+                            let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
+                        }
+                    }
+                }
+                _ => {
+                    response.push_str("-ERR unknown CLUSTER subcommand. Use: PEERS, INFO\r\n");
+                }
             }
         }
 

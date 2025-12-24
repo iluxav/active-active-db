@@ -188,7 +188,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Arc::clone(&store),
             redis_delta_tx,
             Arc::clone(&metrics),
-        );
+        )
+        .with_peer_registry(Arc::clone(&peer_registry));
         let redis_addr = redis_addr.clone();
         tokio::spawn(async move {
             if let Err(e) = redis_server.serve(&redis_addr).await {
