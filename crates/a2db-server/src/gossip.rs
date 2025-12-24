@@ -436,11 +436,12 @@ impl GossipManager {
         }
     }
 
-    /// Exchange peer list with a specific peer via Join RPC
+    /// Check connectivity with a peer and mark as alive if reachable
     async fn gossip_with_peer(
         &self,
         peer: &PeerInfo,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Try to connect to the peer
         let channel = timeout(
             Duration::from_secs(2),
             Channel::from_shared(peer.replication_addr.clone())?
@@ -451,7 +452,7 @@ impl GossipManager {
 
         let mut client = ReplicationServiceClient::new(channel);
 
-        // Call Join to exchange peer lists - this also registers us with the peer
+        // Call Join to exchange peer lists
         let our_addr = self.config.advertise_addr.clone();
         let request = JoinRequest {
             replica_id: self.local_replica_id.to_string(),
@@ -459,21 +460,17 @@ impl GossipManager {
             incarnation: self.local_incarnation.load(Ordering::Relaxed),
         };
 
-        match client.join(request).await {
-            Ok(response) => {
-                let join_response = response.into_inner();
-                // Merge any new peers we learned about
-                for proto_peer in join_response.peers {
-                    if proto_peer.replica_id != self.local_replica_id.as_ref() {
-                        let gossip_peer = PeerInfo::from_proto(&proto_peer);
-                        self.merge_peer_info(gossip_peer).await;
-                    }
+        // Mark peer as alive if we can connect (even if Join fails)
+        self.mark_alive(&peer.replica_id).await;
+
+        // Try to exchange peer lists via Join (best effort)
+        if let Ok(response) = client.join(request).await {
+            let join_response = response.into_inner();
+            for proto_peer in join_response.peers {
+                if proto_peer.replica_id != self.local_replica_id.as_ref() {
+                    let gossip_peer = PeerInfo::from_proto(&proto_peer);
+                    self.merge_peer_info(gossip_peer).await;
                 }
-                // Mark peer as alive since we got a response
-                self.mark_alive(&peer.replica_id).await;
-            }
-            Err(e) => {
-                debug!("Join during gossip failed for {}: {}", peer.replica_id, e);
             }
         }
 

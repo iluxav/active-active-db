@@ -338,7 +338,7 @@ impl Default for DiscoveryConfig {
 }
 
 fn default_gossip_interval() -> u64 {
-    3000 // 3 seconds
+    1000 // 1 second
 }
 
 fn default_gossip_fanout() -> usize {
