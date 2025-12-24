@@ -572,12 +572,61 @@ impl CounterStore {
     }
 
     /// Get all keys (for debugging/admin purposes, excludes expired keys)
+    /// WARNING: This collects all keys - use scan_keys for large datasets
     pub fn keys(&self) -> Vec<Key> {
         self.entries
             .iter()
             .filter(|entry| !Self::is_entry_expired(entry.value()))
             .map(|entry| entry.key().clone())
             .collect()
+    }
+
+    /// Efficiently scan keys with cursor-based pagination
+    /// Returns (keys, next_cursor) where next_cursor is 0 when scan is complete
+    /// The predicate is called for each key to filter results
+    pub fn scan_keys<F>(&self, cursor: usize, count: usize, predicate: F) -> (Vec<Key>, usize)
+    where
+        F: Fn(&str) -> bool,
+    {
+        let mut result = Vec::with_capacity(count);
+        let mut scanned = 0usize;
+        let mut last_pos = cursor;
+
+        for entry in self.entries.iter() {
+            // Skip entries until we reach cursor position
+            if scanned < cursor {
+                scanned += 1;
+                continue;
+            }
+
+            // Skip expired entries
+            if Self::is_entry_expired(entry.value()) {
+                scanned += 1;
+                last_pos = scanned;
+                continue;
+            }
+
+            let key = entry.key();
+            if predicate(key.as_ref()) {
+                result.push(key.clone());
+                if result.len() >= count {
+                    last_pos = scanned + 1;
+                    break;
+                }
+            }
+
+            scanned += 1;
+            last_pos = scanned;
+        }
+
+        // If we've scanned everything, return cursor 0 (done)
+        let next_cursor = if last_pos >= self.entries.len() {
+            0
+        } else {
+            last_pos
+        };
+
+        (result, next_cursor)
     }
 
     // === TTL Operations ===

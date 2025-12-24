@@ -712,41 +712,13 @@ fn execute_command(
                 }
             }
 
-            let all_keys = store.keys();
-            let total = all_keys.len();
-
-            // With pattern: we need to scan from cursor, filtering as we go
-            // Without pattern: simple slice
+            // Use efficient scan_keys with early termination
             let (matched_keys, next_cursor) = if let Some(ref pat) = pattern {
-                // Filter keys matching pattern, starting from cursor position
-                // We scan through keys, collecting matches until we have 'count' or run out
-                let mut matched = Vec::with_capacity(count);
-                let mut last_pos = cursor;
-
-                for (idx, key) in all_keys.iter().enumerate().skip(cursor) {
-                    if pat.matches(key.as_ref()) {
-                        matched.push(key);
-                        if matched.len() >= count {
-                            last_pos = idx + 1;
-                            break;
-                        }
-                    }
-                    last_pos = idx + 1;
-                }
-
-                let next = if last_pos >= total { 0 } else { last_pos };
-                (matched, next)
+                // Scan with pattern filter
+                store.scan_keys(cursor, count, |key| pat.matches(key))
             } else {
-                // No pattern - simple pagination
-                let start = cursor;
-                let end = std::cmp::min(start + count, total);
-                let next = if end >= total { 0 } else { end };
-                let keys: Vec<_> = if start < total {
-                    all_keys.iter().skip(start).take(count).collect()
-                } else {
-                    vec![]
-                };
-                (keys, next)
+                // Scan without filter (match all)
+                store.scan_keys(cursor, count, |_| true)
             };
 
             let cursor_str = next_cursor.to_string();
