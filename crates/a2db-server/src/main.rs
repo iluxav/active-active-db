@@ -362,7 +362,8 @@ fn calculate_disk_usage(data_dir: &std::path::Path) -> u64 {
                 .filter_map(|entry| entry.ok())
                 .filter(|entry| {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    name.starts_with("snapshot-") && (name.ends_with(".json") || name.ends_with(".bin"))
+                    name.starts_with("snapshot-")
+                        && (name.ends_with(".json") || name.ends_with(".bin"))
                 })
                 .filter_map(|entry| entry.metadata().ok())
                 .map(|meta| meta.len())

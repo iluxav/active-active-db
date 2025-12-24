@@ -18,8 +18,8 @@ use tracing::{debug, error, info};
 #[derive(Clone)]
 enum GlobToken {
     Literal(char),
-    Any,           // *
-    Single,        // ?
+    Any,                                // *
+    Single,                             // ?
     CharClass(Vec<(char, char)>, bool), // [abc] or [^abc], ranges stored as (start, end)
 }
 
@@ -82,6 +82,7 @@ impl GlobPattern {
         self.match_recursive(&self.tokens, s.as_bytes())
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn match_recursive(&self, tokens: &[GlobToken], s: &[u8]) -> bool {
         if tokens.is_empty() {
             return s.is_empty();
@@ -269,6 +270,7 @@ async fn handle_connection(
 
 /// Handle RESP protocol array command
 /// Reuses the args buffer to reduce allocations
+#[allow(clippy::too_many_arguments)]
 async fn handle_resp_command(
     reader: &mut TokioBufReader<tokio::net::tcp::OwnedReadHalf>,
     first_line: &str,
@@ -306,11 +308,7 @@ async fn handle_resp_command(
         }
 
         // Parse the bulk string length
-        let len: usize = line
-            .trim()
-            .trim_start_matches('$')
-            .parse()
-            .unwrap_or(0);
+        let len: usize = line.trim().trim_start_matches('$').parse().unwrap_or(0);
 
         // Read exactly `len` bytes of data
         let mut buf = vec![0u8; len];
@@ -1073,9 +1071,7 @@ fn execute_command(
                             for peer in peers {
                                 let info = format!(
                                     "{}|{}|{:?}",
-                                    peer.replica_id,
-                                    peer.replication_addr,
-                                    peer.state
+                                    peer.replica_id, peer.replication_addr, peer.state
                                 );
                                 let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
                             }
@@ -1091,10 +1087,8 @@ fn execute_command(
                         Some(registry) => {
                             let peer_count = registry.len();
                             let replica_id = store.local_replica_id();
-                            let info = format!(
-                                "replica_id:{}\npeer_count:{}\n",
-                                replica_id, peer_count
-                            );
+                            let info =
+                                format!("replica_id:{}\npeer_count:{}\n", replica_id, peer_count);
                             let _ = write!(response, "${}\r\n{}\r\n", info.len(), info);
                         }
                         None => {

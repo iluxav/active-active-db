@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{interval, sleep, timeout};
 use tonic::transport::Channel;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Get current time in milliseconds since Unix epoch
 fn now_ms() -> u64 {
@@ -122,6 +122,7 @@ pub enum PeerEvent {
 /// Configuration for the gossip subsystem
 #[derive(Debug, Clone)]
 pub struct GossipConfig {
+    #[allow(dead_code)]
     pub enabled: bool,
     pub seeds: Vec<String>,
     pub gossip_interval: Duration,
@@ -168,11 +169,13 @@ impl GossipManager {
     }
 
     /// Bump incarnation number (e.g., when refuting a false death announcement)
+    #[allow(dead_code)]
     pub fn bump_incarnation(&self) {
         self.local_incarnation.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Get current peer list (for gossip exchange)
+    #[allow(dead_code)]
     pub fn get_peer_list(&self) -> Vec<PeerInfo> {
         self.peers.iter().map(|e| e.value().clone()).collect()
     }
@@ -187,6 +190,7 @@ impl GossipManager {
     }
 
     /// Get peer count by state
+    #[allow(dead_code)]
     pub fn peer_counts(&self) -> (u64, u64, u64) {
         let mut alive = 0u64;
         let mut suspect = 0u64;
@@ -219,7 +223,6 @@ impl GossipManager {
         );
 
         let replica_id = incoming.replica_id.clone();
-        let mut is_new = false;
 
         // Check if we already know this peer
         if let Some(mut existing) = self.peers.get_mut(&replica_id) {
@@ -238,9 +241,7 @@ impl GossipManager {
             // Same incarnation: prefer Alive > Suspect > Dead
             if incoming.incarnation == existing.incarnation {
                 // If incoming says Alive and we think it's Suspect/Dead, update
-                if incoming.state == PeerState::Alive
-                    && existing.state != PeerState::Alive
-                {
+                if incoming.state == PeerState::Alive && existing.state != PeerState::Alive {
                     existing.state = PeerState::Alive;
                     existing.last_seen = Instant::now();
                     existing.suspect_since = None;
@@ -251,7 +252,6 @@ impl GossipManager {
             false
         } else {
             // New peer discovered
-            is_new = true;
             self.peers.insert(replica_id.clone(), incoming.clone());
 
             // Notify about new peer
@@ -265,7 +265,7 @@ impl GossipManager {
                 info!("PeerEvent::Joined sent successfully");
             }
 
-            is_new
+            true
         }
     }
 
@@ -373,7 +373,10 @@ impl GossipManager {
 
             if !connected_to_any {
                 // Wait before retrying
-                let remaining = self.config.bootstrap_timeout.saturating_sub(bootstrap_start.elapsed());
+                let remaining = self
+                    .config
+                    .bootstrap_timeout
+                    .saturating_sub(bootstrap_start.elapsed());
                 if remaining > Duration::from_secs(1) {
                     debug!("Retrying bootstrap in 1s...");
                     sleep(Duration::from_secs(1)).await;

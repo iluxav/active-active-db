@@ -609,7 +609,10 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
-        assert_eq!(config.server.client_listen_addr, Some("0.0.0.0:9000".into()));
+        assert_eq!(
+            config.server.client_listen_addr,
+            Some("0.0.0.0:9000".into())
+        );
         assert_eq!(config.replication.peers.len(), 2);
         assert_eq!(config.replication.batch_interval_ms, 100);
         assert_eq!(config.logging.level, "debug");

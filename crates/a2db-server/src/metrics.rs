@@ -229,6 +229,7 @@ impl Metrics {
     }
 
     /// Update gossip peer counts
+    #[allow(dead_code)]
     pub fn set_peer_counts(&self, alive: u64, suspect: u64, dead: u64) {
         self.peers_alive.store(alive, Ordering::Relaxed);
         self.peers_suspect.store(suspect, Ordering::Relaxed);
@@ -244,7 +245,8 @@ impl Metrics {
     /// Record a gossip message received
     #[allow(dead_code)]
     pub fn gossip_received(&self) {
-        self.gossip_messages_received.fetch_add(1, Ordering::Relaxed);
+        self.gossip_messages_received
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Get snapshot of all metrics for JSON serialization
@@ -304,7 +306,11 @@ impl Metrics {
                     } else {
                         0
                     },
-                    latency_min_ms: if latency_min == u64::MAX { 0 } else { latency_min },
+                    latency_min_ms: if latency_min == u64::MAX {
+                        0
+                    } else {
+                        latency_min
+                    },
                     latency_max_ms: self.replication_latency_max_ms.load(Ordering::Relaxed),
                 }
             },

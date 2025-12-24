@@ -101,10 +101,7 @@ impl PeerManager {
 
         // Don't connect if we already have a client for this peer
         if self.active_clients.contains_key(peer.replica_id.as_ref()) {
-            info!(
-                "Already connected to peer {}, skipping",
-                peer.replica_id
-            );
+            info!("Already connected to peer {}, skipping", peer.replica_id);
             return;
         }
 
@@ -172,10 +169,8 @@ impl PeerManager {
         });
 
         // Store the handle
-        self.active_clients.insert(
-            replica_id.clone(),
-            ClientHandle { shutdown_tx, task },
-        );
+        self.active_clients
+            .insert(replica_id.clone(), ClientHandle { shutdown_tx, task });
 
         info!("ReplicationClient started for peer {}", replica_id);
     }
@@ -189,11 +184,8 @@ impl PeerManager {
             let _ = handle.shutdown_tx.send(true);
 
             // Give the task time to shutdown gracefully
-            let timeout_result = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                handle.task,
-            )
-            .await;
+            let timeout_result =
+                tokio::time::timeout(std::time::Duration::from_secs(5), handle.task).await;
 
             match timeout_result {
                 Ok(Ok(())) => {

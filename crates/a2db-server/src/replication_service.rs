@@ -225,7 +225,8 @@ impl ReplicationService for ReplicationServiceImpl {
                                         metrics_clone.delta_received();
                                         // Record replication latency if timestamp is valid
                                         if proto_delta.created_at_ms > 0 {
-                                            let latency = receive_time.saturating_sub(proto_delta.created_at_ms);
+                                            let latency = receive_time
+                                                .saturating_sub(proto_delta.created_at_ms);
                                             metrics_clone.record_replication_latency(latency);
                                         }
                                     }
@@ -251,7 +252,10 @@ impl ReplicationService for ReplicationServiceImpl {
                                 }
                                 Message::Gossip(gossip_msg) => {
                                     // Gossip messages are handled by GossipManager when discovery is enabled
-                                    debug!("Received gossip message from {}: {:?}", peer_id, gossip_msg);
+                                    debug!(
+                                        "Received gossip message from {}: {:?}",
+                                        peer_id, gossip_msg
+                                    );
                                 }
                             }
                         }
@@ -348,10 +352,7 @@ impl ReplicationService for ReplicationServiceImpl {
     }
 
     #[instrument(skip(self, request))]
-    async fn join(
-        &self,
-        request: Request<JoinRequest>,
-    ) -> Result<Response<JoinResponse>, Status> {
+    async fn join(&self, request: Request<JoinRequest>) -> Result<Response<JoinResponse>, Status> {
         let req = request.into_inner();
         debug!(
             "Join request from replica: {} at {}",
@@ -384,10 +385,7 @@ impl ReplicationService for ReplicationServiceImpl {
             // Only add if not ourselves
             if req.replica_id != self.store.local_replica_id().as_ref() {
                 registry.insert(replica_id_key, joining_peer);
-                debug!(
-                    "Added joining node {} to peer registry",
-                    req.replica_id
-                );
+                debug!("Added joining node {} to peer registry", req.replica_id);
             }
 
             // Now return all known peers (including the one we just added)

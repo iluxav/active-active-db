@@ -273,7 +273,8 @@ impl ReplicationClient {
                                     self.metrics.delta_received();
                                     // Record replication latency if timestamp is valid
                                     if proto_delta.created_at_ms > 0 {
-                                        let latency = receive_time.saturating_sub(proto_delta.created_at_ms);
+                                        let latency =
+                                            receive_time.saturating_sub(proto_delta.created_at_ms);
                                         self.metrics.record_replication_latency(latency);
                                     }
                                 }
