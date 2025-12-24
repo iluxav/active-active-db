@@ -353,7 +353,7 @@ impl ReplicationService for ReplicationServiceImpl {
         request: Request<JoinRequest>,
     ) -> Result<Response<JoinResponse>, Status> {
         let req = request.into_inner();
-        info!(
+        debug!(
             "Join request from replica: {} at {}",
             req.replica_id, req.replication_addr
         );
@@ -384,7 +384,7 @@ impl ReplicationService for ReplicationServiceImpl {
             // Only add if not ourselves
             if req.replica_id != self.store.local_replica_id().as_ref() {
                 registry.insert(replica_id_key, joining_peer);
-                info!(
+                debug!(
                     "Added joining node {} to peer registry",
                     req.replica_id
                 );
@@ -395,7 +395,7 @@ impl ReplicationService for ReplicationServiceImpl {
                 let peer = entry.value();
                 peers.push(peer.to_proto());
             }
-            info!(
+            debug!(
                 "Returning {} peers to joining node {}",
                 peers.len(),
                 req.replica_id

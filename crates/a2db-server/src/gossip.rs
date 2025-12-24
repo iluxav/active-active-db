@@ -213,7 +213,7 @@ impl GossipManager {
             return false;
         }
 
-        info!(
+        debug!(
             "Merging peer info: {} at {}",
             incoming.replica_id, incoming.replication_addr
         );
