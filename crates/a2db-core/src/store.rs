@@ -536,6 +536,36 @@ impl CounterStore {
         self.entries.len()
     }
 
+    /// Estimate the memory usage of the store in bytes
+    pub fn estimated_memory_bytes(&self) -> u64 {
+        let mut total: u64 = 0;
+
+        for entry in self.entries.iter() {
+            // Key size (Arc overhead + string length)
+            total += 24 + entry.key().len() as u64;
+
+            // Value size
+            match entry.value() {
+                ValueType::Counter(counter_entry) => {
+                    // GCounter: ~80 bytes base + 24 bytes per replica component
+                    let replica_count = counter_entry.counter.p_components().count()
+                        + counter_entry.counter.n_components().count();
+                    total += 80 + (replica_count as u64 * 24);
+                    // Expiration: Option<u64> = 16 bytes
+                    total += 16;
+                }
+                ValueType::String(string_entry) => {
+                    // LWWRegister: ~48 bytes base + string value length
+                    total += 48 + string_entry.register.value().len() as u64;
+                    // Expiration: Option<u64> = 16 bytes
+                    total += 16;
+                }
+            }
+        }
+
+        total
+    }
+
     /// Check if the store is empty
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()

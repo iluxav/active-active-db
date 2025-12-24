@@ -103,15 +103,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // Start background task to update key count metrics
+    // Start background task to update store metrics (keys, memory, disk)
     if config.metrics.enabled {
         let metrics_store = Arc::clone(&store);
         let metrics_ref = Arc::clone(&metrics);
+        let data_dir = if config.persistence.enabled {
+            Some(std::path::PathBuf::from(&config.persistence.data_dir))
+        } else {
+            None
+        };
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
                 metrics_ref.set_keys_total(metrics_store.key_count() as u64);
+                metrics_ref.set_memory_bytes(metrics_store.estimated_memory_bytes());
+
+                // Calculate disk usage from snapshot files
+                if let Some(ref dir) = data_dir {
+                    let disk_bytes = calculate_disk_usage(dir);
+                    metrics_ref.set_disk_bytes(disk_bytes);
+                }
             }
         });
     }
@@ -335,4 +347,25 @@ fn init_logging(config: &config::LoggingConfig) {
                 .init();
         }
     }
+}
+
+/// Calculate total disk usage of snapshot files in the data directory.
+fn calculate_disk_usage(data_dir: &std::path::Path) -> u64 {
+    if !data_dir.exists() {
+        return 0;
+    }
+
+    std::fs::read_dir(data_dir)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    name.starts_with("snapshot-") && (name.ends_with(".json") || name.ends_with(".bin"))
+                })
+                .filter_map(|entry| entry.metadata().ok())
+                .map(|meta| meta.len())
+                .sum()
+        })
+        .unwrap_or(0)
 }

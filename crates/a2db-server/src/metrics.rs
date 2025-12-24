@@ -44,6 +44,8 @@ pub struct Metrics {
 
     // Store metrics
     pub keys_total: AtomicU64,
+    pub memory_bytes: AtomicU64,
+    pub disk_bytes: AtomicU64,
 
     // Gossip metrics
     pub peers_alive: AtomicU64,
@@ -84,6 +86,8 @@ impl Metrics {
             replication_latency_min_ms: AtomicU64::new(u64::MAX),
             replication_latency_max_ms: AtomicU64::new(0),
             keys_total: AtomicU64::new(0),
+            memory_bytes: AtomicU64::new(0),
+            disk_bytes: AtomicU64::new(0),
             peers_alive: AtomicU64::new(0),
             peers_suspect: AtomicU64::new(0),
             peers_dead: AtomicU64::new(0),
@@ -216,6 +220,14 @@ impl Metrics {
         self.keys_total.store(count, Ordering::Relaxed);
     }
 
+    pub fn set_memory_bytes(&self, bytes: u64) {
+        self.memory_bytes.store(bytes, Ordering::Relaxed);
+    }
+
+    pub fn set_disk_bytes(&self, bytes: u64) {
+        self.disk_bytes.store(bytes, Ordering::Relaxed);
+    }
+
     /// Update gossip peer counts
     pub fn set_peer_counts(&self, alive: u64, suspect: u64, dead: u64) {
         self.peers_alive.store(alive, Ordering::Relaxed);
@@ -298,6 +310,8 @@ impl Metrics {
             },
             store: StoreMetrics {
                 keys: self.keys_total.load(Ordering::Relaxed),
+                memory_bytes: self.memory_bytes.load(Ordering::Relaxed),
+                disk_bytes: self.disk_bytes.load(Ordering::Relaxed),
             },
             gossip: GossipMetrics {
                 peers_alive: self.peers_alive.load(Ordering::Relaxed),
@@ -363,6 +377,8 @@ pub struct ReplicationMetrics {
 #[derive(Serialize)]
 pub struct StoreMetrics {
     pub keys: u64,
+    pub memory_bytes: u64,
+    pub disk_bytes: u64,
 }
 
 #[derive(Serialize)]
