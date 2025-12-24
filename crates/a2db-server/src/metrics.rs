@@ -45,6 +45,13 @@ pub struct Metrics {
     // Store metrics
     pub keys_total: AtomicU64,
 
+    // Gossip metrics
+    pub peers_alive: AtomicU64,
+    pub peers_suspect: AtomicU64,
+    pub peers_dead: AtomicU64,
+    pub gossip_messages_sent: AtomicU64,
+    pub gossip_messages_received: AtomicU64,
+
     // Startup time for uptime calculation
     start_time: std::time::SystemTime,
 }
@@ -77,6 +84,11 @@ impl Metrics {
             replication_latency_min_ms: AtomicU64::new(u64::MAX),
             replication_latency_max_ms: AtomicU64::new(0),
             keys_total: AtomicU64::new(0),
+            peers_alive: AtomicU64::new(0),
+            peers_suspect: AtomicU64::new(0),
+            peers_dead: AtomicU64::new(0),
+            gossip_messages_sent: AtomicU64::new(0),
+            gossip_messages_received: AtomicU64::new(0),
             start_time: std::time::SystemTime::now(),
         }
     }
@@ -204,6 +216,25 @@ impl Metrics {
         self.keys_total.store(count, Ordering::Relaxed);
     }
 
+    /// Update gossip peer counts
+    pub fn set_peer_counts(&self, alive: u64, suspect: u64, dead: u64) {
+        self.peers_alive.store(alive, Ordering::Relaxed);
+        self.peers_suspect.store(suspect, Ordering::Relaxed);
+        self.peers_dead.store(dead, Ordering::Relaxed);
+    }
+
+    /// Record a gossip message sent
+    #[allow(dead_code)]
+    pub fn gossip_sent(&self) {
+        self.gossip_messages_sent.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a gossip message received
+    #[allow(dead_code)]
+    pub fn gossip_received(&self) {
+        self.gossip_messages_received.fetch_add(1, Ordering::Relaxed);
+    }
+
     /// Get snapshot of all metrics for JSON serialization
     pub fn snapshot(&self) -> MetricsSnapshot {
         let uptime_secs = self.start_time.elapsed().map(|d| d.as_secs()).unwrap_or(0);
@@ -268,6 +299,13 @@ impl Metrics {
             store: StoreMetrics {
                 keys: self.keys_total.load(Ordering::Relaxed),
             },
+            gossip: GossipMetrics {
+                peers_alive: self.peers_alive.load(Ordering::Relaxed),
+                peers_suspect: self.peers_suspect.load(Ordering::Relaxed),
+                peers_dead: self.peers_dead.load(Ordering::Relaxed),
+                messages_sent: self.gossip_messages_sent.load(Ordering::Relaxed),
+                messages_received: self.gossip_messages_received.load(Ordering::Relaxed),
+            },
         }
     }
 }
@@ -280,6 +318,7 @@ pub struct MetricsSnapshot {
     pub latency_avg_us: LatencyMetrics,
     pub replication: ReplicationMetrics,
     pub store: StoreMetrics,
+    pub gossip: GossipMetrics,
 }
 
 #[derive(Serialize)]
@@ -324,6 +363,15 @@ pub struct ReplicationMetrics {
 #[derive(Serialize)]
 pub struct StoreMetrics {
     pub keys: u64,
+}
+
+#[derive(Serialize)]
+pub struct GossipMetrics {
+    pub peers_alive: u64,
+    pub peers_suspect: u64,
+    pub peers_dead: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
 }
 
 /// Simple HTTP server for metrics endpoint

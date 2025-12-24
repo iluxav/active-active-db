@@ -17,7 +17,8 @@ pub struct CliArgs {
     #[arg(long, env = "A2DB_REPLICA_ID")]
     pub replica_id: Option<String>,
 
-    /// gRPC client listen address (e.g., 0.0.0.0:9000)
+    /// gRPC client listen address (optional, e.g., 0.0.0.0:9000)
+    /// If not set, gRPC client service won't start (use Redis protocol instead)
     #[arg(long, env = "A2DB_CLIENT_ADDR")]
     pub client_addr: Option<String>,
 
@@ -56,6 +57,18 @@ pub struct CliArgs {
     /// Metrics HTTP endpoint address (e.g., 0.0.0.0:9090)
     #[arg(long, env = "A2DB_METRICS_ADDR")]
     pub metrics_addr: Option<String>,
+
+    /// Enable gossip-based peer discovery
+    #[arg(long, env = "A2DB_DISCOVERY")]
+    pub discovery: bool,
+
+    /// Seed nodes for gossip discovery (can be specified multiple times)
+    #[arg(long = "seed", env = "A2DB_SEEDS", value_delimiter = ',')]
+    pub seeds: Option<Vec<String>>,
+
+    /// Address to advertise to other nodes (defaults to replication-addr)
+    #[arg(long, env = "A2DB_ADVERTISE_ADDR")]
+    pub advertise_addr: Option<String>,
 }
 
 /// Server configuration loaded from TOML file
@@ -65,6 +78,8 @@ pub struct Config {
     pub identity: IdentityConfig,
     #[serde(default)]
     pub replication: ReplicationConfig,
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     #[serde(default)]
     pub persistence: PersistenceConfig,
     #[serde(default)]
@@ -77,8 +92,10 @@ pub struct Config {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServerConfig {
-    /// Address to listen on for gRPC client connections (e.g., "0.0.0.0:9000")
-    pub client_listen_addr: String,
+    /// Address to listen on for gRPC client connections (optional, e.g., "0.0.0.0:9000")
+    /// If not set, only Redis protocol is available for clients
+    #[serde(default)]
+    pub client_listen_addr: Option<String>,
     /// Address to listen on for replication connections (e.g., "0.0.0.0:9001")
     pub replication_listen_addr: String,
     /// Address to listen on for Redis-compatible connections (e.g., "0.0.0.0:6379")
@@ -268,6 +285,86 @@ pub struct MetricsConfig {
     pub listen_addr: Option<String>,
 }
 
+/// Configuration for gossip-based peer discovery
+#[derive(Debug, Clone, Deserialize)]
+pub struct DiscoveryConfig {
+    /// Enable gossip-based peer discovery
+    #[serde(default)]
+    pub enabled: bool,
+    /// Seed nodes for bootstrap (uses replication.peers if empty)
+    #[serde(default)]
+    pub seeds: Vec<String>,
+    /// Interval between gossip rounds in milliseconds
+    #[serde(default = "default_gossip_interval")]
+    pub gossip_interval_ms: u64,
+    /// Number of peers to gossip with each round
+    #[serde(default = "default_gossip_fanout")]
+    pub gossip_fanout: usize,
+    /// Heartbeat check interval in milliseconds
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_ms: u64,
+    /// Number of missed heartbeats before marking peer as suspect
+    #[serde(default = "default_suspect_threshold")]
+    pub suspect_threshold: u32,
+    /// Time in suspect state before declaring dead (milliseconds)
+    #[serde(default = "default_suspect_timeout")]
+    pub suspect_timeout_ms: u64,
+    /// Time to keep dead nodes before removing from registry (milliseconds)
+    #[serde(default = "default_dead_timeout")]
+    pub dead_timeout_ms: u64,
+    /// Timeout for bootstrap phase before starting alone (milliseconds)
+    #[serde(default = "default_bootstrap_timeout")]
+    pub bootstrap_timeout_ms: u64,
+    /// Address to advertise to other nodes (auto-detect from replication_listen_addr if empty)
+    #[serde(default)]
+    pub advertise_addr: Option<String>,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            seeds: Vec::new(),
+            gossip_interval_ms: default_gossip_interval(),
+            gossip_fanout: default_gossip_fanout(),
+            heartbeat_interval_ms: default_heartbeat_interval(),
+            suspect_threshold: default_suspect_threshold(),
+            suspect_timeout_ms: default_suspect_timeout(),
+            dead_timeout_ms: default_dead_timeout(),
+            bootstrap_timeout_ms: default_bootstrap_timeout(),
+            advertise_addr: None,
+        }
+    }
+}
+
+fn default_gossip_interval() -> u64 {
+    1000 // 1 second
+}
+
+fn default_gossip_fanout() -> usize {
+    3
+}
+
+fn default_heartbeat_interval() -> u64 {
+    500 // 500ms
+}
+
+fn default_suspect_threshold() -> u32 {
+    3
+}
+
+fn default_suspect_timeout() -> u64 {
+    5000 // 5 seconds
+}
+
+fn default_dead_timeout() -> u64 {
+    30000 // 30 seconds
+}
+
+fn default_bootstrap_timeout() -> u64 {
+    30000 // 30 seconds
+}
+
 impl Config {
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
@@ -290,12 +387,6 @@ impl Config {
             )
         })?;
 
-        let client_listen_addr = args.client_addr.clone().ok_or_else(|| {
-            ConfigError::Validation(
-                "--client-addr is required when no config file is provided".to_string(),
-            )
-        })?;
-
         let replication_listen_addr = args.replication_addr.clone().ok_or_else(|| {
             ConfigError::Validation(
                 "--replication-addr is required when no config file is provided".to_string(),
@@ -304,7 +395,7 @@ impl Config {
 
         Ok(Self {
             server: ServerConfig {
-                client_listen_addr,
+                client_listen_addr: args.client_addr.clone(),
                 replication_listen_addr,
                 redis_listen_addr: args.redis_addr.clone(),
             },
@@ -314,6 +405,12 @@ impl Config {
             },
             replication: ReplicationConfig {
                 peers: args.peers.clone().unwrap_or_default(),
+                ..Default::default()
+            },
+            discovery: DiscoveryConfig {
+                enabled: args.discovery,
+                seeds: args.seeds.clone().unwrap_or_default(),
+                advertise_addr: args.advertise_addr.clone(),
                 ..Default::default()
             },
             persistence: PersistenceConfig {
@@ -339,8 +436,8 @@ impl Config {
     /// Apply CLI argument overrides to an existing config
     pub fn apply_cli_overrides(&mut self, args: &CliArgs) {
         // Server overrides
-        if let Some(ref addr) = args.client_addr {
-            self.server.client_listen_addr = addr.clone();
+        if args.client_addr.is_some() {
+            self.server.client_listen_addr = args.client_addr.clone();
         }
         if let Some(ref addr) = args.replication_addr {
             self.server.replication_listen_addr = addr.clone();
@@ -379,6 +476,17 @@ impl Config {
             self.metrics.enabled = true;
             self.metrics.listen_addr = Some(addr.clone());
         }
+
+        // Discovery overrides
+        if args.discovery {
+            self.discovery.enabled = true;
+        }
+        if let Some(ref seeds) = args.seeds {
+            self.discovery.seeds = seeds.clone();
+        }
+        if let Some(ref addr) = args.advertise_addr {
+            self.discovery.advertise_addr = Some(addr.clone());
+        }
     }
 
     /// Load config from file if provided, or create from CLI args, then apply overrides
@@ -408,15 +516,16 @@ impl Config {
             ));
         }
 
-        if self.server.client_listen_addr.is_empty() {
-            return Err(ConfigError::Validation(
-                "client_listen_addr cannot be empty".to_string(),
-            ));
-        }
-
         if self.server.replication_listen_addr.is_empty() {
             return Err(ConfigError::Validation(
                 "replication_listen_addr cannot be empty".to_string(),
+            ));
+        }
+
+        // Warn if neither client nor redis address is set
+        if self.server.client_listen_addr.is_none() && self.server.redis_listen_addr.is_none() {
+            return Err(ConfigError::Validation(
+                "At least one of client_listen_addr or redis_listen_addr must be set".to_string(),
             ));
         }
 
@@ -463,8 +572,8 @@ mod tests {
     fn test_parse_minimal_config() {
         let toml = r#"
             [server]
-            client_listen_addr = "0.0.0.0:9000"
             replication_listen_addr = "0.0.0.0:9001"
+            redis_listen_addr = "0.0.0.0:6379"
 
             [identity]
             replica_id = "replica-1"
@@ -472,7 +581,7 @@ mod tests {
 
         let config: Config = toml::from_str(toml).unwrap();
         assert_eq!(config.identity.replica_id, "replica-1");
-        assert_eq!(config.server.client_listen_addr, "0.0.0.0:9000");
+        assert!(config.server.client_listen_addr.is_none());
         assert!(config.replication.peers.is_empty());
     }
 
@@ -482,6 +591,7 @@ mod tests {
             [server]
             client_listen_addr = "0.0.0.0:9000"
             replication_listen_addr = "0.0.0.0:9001"
+            redis_listen_addr = "0.0.0.0:6379"
 
             [identity]
             replica_id = "us-west-2-replica-1"
@@ -499,6 +609,7 @@ mod tests {
         "#;
 
         let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.server.client_listen_addr, Some("0.0.0.0:9000".into()));
         assert_eq!(config.replication.peers.len(), 2);
         assert_eq!(config.replication.batch_interval_ms, 100);
         assert_eq!(config.logging.level, "debug");
@@ -508,15 +619,39 @@ mod tests {
     fn test_validate_empty_replica_id() {
         let config = Config {
             server: ServerConfig {
-                client_listen_addr: "0.0.0.0:9000".into(),
+                client_listen_addr: None,
                 replication_listen_addr: "0.0.0.0:9001".into(),
-                redis_listen_addr: None,
+                redis_listen_addr: Some("0.0.0.0:6379".into()),
             },
             identity: IdentityConfig {
                 replica_id: "".into(),
                 identity_file: None,
             },
             replication: ReplicationConfig::default(),
+            discovery: DiscoveryConfig::default(),
+            persistence: PersistenceConfig::default(),
+            expiration: ExpirationConfig::default(),
+            logging: LoggingConfig::default(),
+            metrics: MetricsConfig::default(),
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_no_client_endpoints() {
+        let config = Config {
+            server: ServerConfig {
+                client_listen_addr: None,
+                replication_listen_addr: "0.0.0.0:9001".into(),
+                redis_listen_addr: None,
+            },
+            identity: IdentityConfig {
+                replica_id: "replica-1".into(),
+                identity_file: None,
+            },
+            replication: ReplicationConfig::default(),
+            discovery: DiscoveryConfig::default(),
             persistence: PersistenceConfig::default(),
             expiration: ExpirationConfig::default(),
             logging: LoggingConfig::default(),
@@ -530,8 +665,8 @@ mod tests {
     fn test_parse_persistence_config() {
         let toml = r#"
             [server]
-            client_listen_addr = "0.0.0.0:9000"
             replication_listen_addr = "0.0.0.0:9001"
+            redis_listen_addr = "0.0.0.0:6379"
 
             [identity]
             replica_id = "replica-1"

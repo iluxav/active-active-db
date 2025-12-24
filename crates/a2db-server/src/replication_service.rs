@@ -1,8 +1,10 @@
+use crate::gossip::{PeerInfo as GossipPeerInfo, SharedPeerRegistry};
 use crate::metrics::Metrics;
 use a2db_core::{CounterStore, Delta as CoreDelta, DeltaCompactor, DeltaType as CoreDeltaType};
 use a2db_proto::replication::v1::{
     replication_message::Message, replication_service_server::ReplicationService, Ack,
-    AntiEntropyRequest, Delta, DeltaBatch, DeltaType, Handshake, ReplicationMessage,
+    AntiEntropyRequest, Delta, DeltaBatch, DeltaType, Handshake, JoinRequest, JoinResponse,
+    PeerInfo, PeerState, ReplicationMessage,
 };
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +33,10 @@ pub struct ReplicationServiceImpl {
     protocol_version: u32,
     /// Metrics for tracking replication stats
     metrics: Arc<Metrics>,
+    /// Address to advertise for replication (used in Join response)
+    advertise_addr: Option<String>,
+    /// Shared peer registry from GossipManager (optional, for discovery mode)
+    peer_registry: Option<SharedPeerRegistry>,
 }
 
 impl ReplicationServiceImpl {
@@ -44,7 +50,19 @@ impl ReplicationServiceImpl {
             delta_broadcast,
             protocol_version: 1,
             metrics,
+            advertise_addr: None,
+            peer_registry: None,
         }
+    }
+
+    pub fn with_advertise_addr(mut self, addr: String) -> Self {
+        self.advertise_addr = Some(addr);
+        self
+    }
+
+    pub fn with_peer_registry(mut self, registry: SharedPeerRegistry) -> Self {
+        self.peer_registry = Some(registry);
+        self
     }
 
     /// Convert core DeltaType to proto DeltaType
@@ -231,6 +249,10 @@ impl ReplicationService for ReplicationServiceImpl {
                                 Message::Handshake(_) => {
                                     warn!("Unexpected handshake after initial handshake");
                                 }
+                                Message::Gossip(gossip_msg) => {
+                                    // Gossip messages are handled by GossipManager when discovery is enabled
+                                    debug!("Received gossip message from {}: {:?}", peer_id, gossip_msg);
+                                }
                             }
                         }
                     }
@@ -323,6 +345,51 @@ impl ReplicationService for ReplicationServiceImpl {
 
         let stream = tokio_stream::iter(deltas);
         Ok(Response::new(Box::pin(stream)))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn join(
+        &self,
+        request: Request<JoinRequest>,
+    ) -> Result<Response<JoinResponse>, Status> {
+        let req = request.into_inner();
+        info!(
+            "Join request from replica: {} at {}",
+            req.replica_id, req.replication_addr
+        );
+
+        // Build peer list with ourselves first
+        let our_addr = self.advertise_addr.clone().unwrap_or_default();
+        let mut peers = vec![
+            // Include ourselves in the peer list
+            PeerInfo {
+                replica_id: self.store.local_replica_id().to_string(),
+                replication_addr: our_addr,
+                incarnation: now_ms(),
+                state: PeerState::Alive as i32,
+                last_seen_ms: now_ms(),
+            },
+        ];
+
+        // Add all known peers from the registry (if available)
+        if let Some(ref registry) = self.peer_registry {
+            for entry in registry.iter() {
+                let peer = entry.value();
+                peers.push(peer.to_proto());
+            }
+            info!(
+                "Returning {} peers to joining node {}",
+                peers.len(),
+                req.replica_id
+            );
+        }
+
+        let response = JoinResponse {
+            accepted: true,
+            peers,
+        };
+
+        Ok(Response::new(response))
     }
 }
 

@@ -1,0 +1,64 @@
+# 3-Node Local Cluster with Gossip Discovery
+# Run each node with: ./target/release/a2db --config config/discovery-node1.toml
+#
+# This is a template - copy and modify for each node:
+#   - Change replica_id
+#   - Change port numbers
+#   - Change data_dir
+#   - Set advertise_addr to match replication_listen_addr
+
+[server]
+replication_listen_addr = "127.0.0.1:9001"
+redis_listen_addr = "127.0.0.1:16379"
+
+[identity]
+replica_id = "node-1"
+
+[replication]
+peers = []  # Ignored when discovery is enabled
+batch_interval_ms = 50
+max_batch_size = 1000
+
+[discovery]
+enabled = true
+
+# All nodes use the same seeds list
+# First node to start becomes the seed, others join via gossip
+seeds = [
+    "http://127.0.0.1:9001",   # node-1
+    "http://127.0.0.1:9011",   # node-2
+    "http://127.0.0.1:9021",   # node-3
+]
+
+# Must match replication_listen_addr for local testing
+advertise_addr = "http://127.0.0.1:9001"
+
+# Fast failure detection for local testing
+gossip_interval_ms = 500
+gossip_fanout = 2
+heartbeat_interval_ms = 250
+suspect_threshold = 3
+suspect_timeout_ms = 2000
+dead_timeout_ms = 10000
+bootstrap_timeout_ms = 5000
+
+[persistence]
+enabled = true
+data_dir = "./data/node1"
+snapshot_interval_s = 5
+snapshot_retain_count = 3
+format = "bincode"
+
+[expiration]
+enabled = true
+cleanup_interval_s = 1
+cleanup_batch_size = 100
+grace_period_s = 5
+
+[metrics]
+enabled = true
+listen_addr = "127.0.0.1:9090"
+
+[logging]
+level = "debug"
+format = "pretty"

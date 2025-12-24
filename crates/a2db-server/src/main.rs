@@ -1,7 +1,9 @@
 mod client_service;
 mod config;
 mod expiration;
+mod gossip;
 mod metrics;
+mod peer_manager;
 mod persistence;
 mod redis_protocol;
 mod replication_client;
@@ -13,13 +15,16 @@ use a2db_proto::replication::v1::replication_service_server::ReplicationServiceS
 use clap::Parser;
 use client_service::CounterServiceImpl;
 use config::{CliArgs, Config};
+use dashmap::DashMap;
+use gossip::{GossipConfig, GossipManager, SharedPeerRegistry};
 use metrics::{Metrics, MetricsServer};
+use peer_manager::PeerManager;
 use persistence::PersistenceManager;
 use replication_client::ReplicationClient;
 use replication_service::ReplicationServiceImpl;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::{broadcast, mpsc, watch};
 use tonic::transport::Server;
 use tracing::{error, info};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -133,12 +138,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create client service
     let client_service = CounterServiceImpl::new(Arc::clone(&store), delta_tx);
 
-    // Create replication service
+    // Determine advertise address for replication service
+    let advertise_addr = if config.discovery.enabled {
+        config
+            .discovery
+            .advertise_addr
+            .clone()
+            .unwrap_or_else(|| {
+                let addr = &config.server.replication_listen_addr;
+                if addr.starts_with("http://") || addr.starts_with("https://") {
+                    addr.clone()
+                } else {
+                    format!("http://{}", addr)
+                }
+            })
+    } else {
+        // For static peer mode, still set an advertise address
+        let addr = &config.server.replication_listen_addr;
+        if addr.starts_with("http://") || addr.starts_with("https://") {
+            addr.clone()
+        } else {
+            format!("http://{}", addr)
+        }
+    };
+
+    // Create shared peer registry for gossip (shared between GossipManager and ReplicationService)
+    let peer_registry: SharedPeerRegistry = Arc::new(DashMap::new());
+
+    // Create replication service with advertise address and peer registry
     let replication_service = ReplicationServiceImpl::new(
         Arc::clone(&store),
         broadcast_tx.clone(),
         Arc::clone(&metrics),
-    );
+    )
+    .with_advertise_addr(advertise_addr.clone())
+    .with_peer_registry(Arc::clone(&peer_registry));
 
     // Start Redis-compatible server if configured
     if let Some(redis_addr) = &config.server.redis_listen_addr {
@@ -156,51 +190,131 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!(redis_addr = %config.server.redis_listen_addr.as_ref().unwrap(), "Redis-compatible server started");
     }
 
-    // Start replication clients for each peer
-    for peer_addr in &config.replication.peers {
-        let client = ReplicationClient::new(
-            peer_addr.clone(),
+    // Create shutdown channel for graceful shutdown
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+
+    // Start replication - either with gossip-based discovery or static peer list
+    if config.discovery.enabled {
+        info!("Gossip-based peer discovery enabled");
+
+        // Create peer event channel
+        let (peer_event_tx, peer_event_rx) = mpsc::channel(100);
+
+        // Determine seeds - use static peers as seeds if discovery.seeds is empty
+        let seeds = if config.discovery.seeds.is_empty() {
+            config.replication.peers.clone()
+        } else {
+            config.discovery.seeds.clone()
+        };
+
+        // Create gossip configuration
+        let gossip_config = GossipConfig {
+            enabled: true,
+            seeds,
+            gossip_interval: Duration::from_millis(config.discovery.gossip_interval_ms),
+            gossip_fanout: config.discovery.gossip_fanout,
+            heartbeat_interval: Duration::from_millis(config.discovery.heartbeat_interval_ms),
+            suspect_threshold: config.discovery.suspect_threshold,
+            suspect_timeout: Duration::from_millis(config.discovery.suspect_timeout_ms),
+            dead_timeout: Duration::from_millis(config.discovery.dead_timeout_ms),
+            bootstrap_timeout: Duration::from_millis(config.discovery.bootstrap_timeout_ms),
+            advertise_addr,
+        };
+
+        // Create and start GossipManager
+        let gossip_manager = Arc::new(GossipManager::new(
+            gossip_config,
+            Arc::from(config.identity.replica_id.as_str()),
+            Arc::clone(&peer_registry),
+            peer_event_tx,
+            shutdown_rx.clone(),
+        ));
+
+        let gossip = Arc::clone(&gossip_manager);
+        tokio::spawn(async move {
+            gossip.run().await;
+        });
+
+        // Create and start PeerManager
+        let peer_manager = PeerManager::new(
             config.identity.replica_id.clone(),
             Arc::clone(&store),
-            broadcast_tx.subscribe(),
+            broadcast_tx.clone(),
             Arc::clone(&metrics),
+            peer_event_rx,
         );
 
         tokio::spawn(async move {
-            client.run().await;
+            peer_manager.run().await;
         });
+
+        info!("Gossip-based peer discovery started");
+    } else {
+        // Static peer configuration (existing behavior)
+        for peer_addr in &config.replication.peers {
+            let client = ReplicationClient::new(
+                peer_addr.clone(),
+                config.identity.replica_id.clone(),
+                Arc::clone(&store),
+                broadcast_tx.subscribe(),
+                Arc::clone(&metrics),
+            );
+
+            tokio::spawn(async move {
+                client.run().await;
+            });
+        }
     }
 
-    // Parse addresses
-    let client_addr = config.server.client_listen_addr.parse()?;
+    // Keep shutdown_tx alive for graceful shutdown (unused for now, but needed for gossip)
+    let _shutdown_tx = shutdown_tx;
+
+    // Parse replication address (always required)
     let replication_addr = config.server.replication_listen_addr.parse()?;
 
-    info!(
-        client_addr = %config.server.client_listen_addr,
-        replication_addr = %config.server.replication_listen_addr,
-        "Starting gRPC servers"
-    );
+    // Start gRPC client server only if configured
+    if let Some(ref client_addr_str) = config.server.client_listen_addr {
+        let client_addr = client_addr_str.parse()?;
+        info!(
+            client_addr = %client_addr_str,
+            replication_addr = %config.server.replication_listen_addr,
+            "Starting gRPC servers"
+        );
 
-    // Start both servers concurrently
-    let client_server = Server::builder()
-        .add_service(CounterServiceServer::new(client_service))
-        .serve(client_addr);
+        let client_server = Server::builder()
+            .add_service(CounterServiceServer::new(client_service))
+            .serve(client_addr);
 
-    let replication_server = Server::builder()
-        .add_service(ReplicationServiceServer::new(replication_service))
-        .serve(replication_addr);
+        let replication_server = Server::builder()
+            .add_service(ReplicationServiceServer::new(replication_service))
+            .serve(replication_addr);
 
-    // Run both servers
-    tokio::select! {
-        result = client_server => {
-            if let Err(e) = result {
-                error!("Client server error: {}", e);
+        // Run both servers
+        tokio::select! {
+            result = client_server => {
+                if let Err(e) = result {
+                    error!("Client server error: {}", e);
+                }
+            }
+            result = replication_server => {
+                if let Err(e) = result {
+                    error!("Replication server error: {}", e);
+                }
             }
         }
-        result = replication_server => {
-            if let Err(e) = result {
-                error!("Replication server error: {}", e);
-            }
+    } else {
+        // Only replication server (clients use Redis protocol)
+        info!(
+            replication_addr = %config.server.replication_listen_addr,
+            "Starting replication server (gRPC client disabled, use Redis protocol)"
+        );
+
+        let replication_server = Server::builder()
+            .add_service(ReplicationServiceServer::new(replication_service))
+            .serve(replication_addr);
+
+        if let Err(e) = replication_server.await {
+            error!("Replication server error: {}", e);
         }
     }
 

@@ -1,0 +1,75 @@
+# Active-Active Database (a2db) Configuration with Gossip Discovery
+# This example shows automatic peer discovery using SWIM-like gossip protocol
+
+[server]
+# Address to listen on for replication connections (inter-replica sync)
+# This is also used for gossip protocol messages
+replication_listen_addr = "0.0.0.0:9001"
+
+# Redis-compatible protocol address (main client interface)
+redis_listen_addr = "0.0.0.0:6379"
+
+# Optional: gRPC client address (uncomment if you need gRPC API)
+# client_listen_addr = "0.0.0.0:9000"
+
+[identity]
+# Stable replica ID - must be unique across all replicas
+replica_id = "node-1"
+
+[replication]
+# With discovery enabled, peers are discovered automatically via gossip
+# This list is only used when discovery.enabled = false
+peers = []
+batch_interval_ms = 50
+max_batch_size = 1000
+
+[discovery]
+# Enable gossip-based peer discovery
+enabled = true
+
+# Seed nodes to bootstrap cluster membership
+# At least one seed must be reachable to join an existing cluster
+# If all seeds are unreachable after bootstrap_timeout, node starts alone
+seeds = [
+    "http://10.0.0.1:9001",
+    "http://10.0.0.2:9001",
+]
+
+# Address to advertise to other nodes (what peers use to connect back)
+# If not specified, uses replication_listen_addr
+# For multi-region deployments, set this to the public/VPC address
+advertise_addr = "http://10.0.0.3:9001"
+
+# Gossip protocol tuning
+gossip_interval_ms = 1000      # How often to exchange peer lists (1s)
+gossip_fanout = 3              # Number of peers to gossip with each round
+
+# Failure detection (SWIM-style)
+heartbeat_interval_ms = 500    # How often to check peer health (500ms)
+suspect_threshold = 3          # Missed heartbeats before marking suspect
+suspect_timeout_ms = 5000      # Time in suspect state before marking dead (5s)
+dead_timeout_ms = 30000        # Time before removing dead peer from registry (30s)
+
+# Bootstrap behavior
+bootstrap_timeout_ms = 30000   # Start alone after this timeout if seeds unreachable (30s)
+
+[persistence]
+enabled = true
+data_dir = "./data"
+snapshot_interval_s = 5
+snapshot_retain_count = 3
+format = "bincode"
+
+[expiration]
+enabled = true
+cleanup_interval_s = 1
+cleanup_batch_size = 100
+grace_period_s = 5
+
+[metrics]
+enabled = true
+listen_addr = "0.0.0.0:9090"
+
+[logging]
+level = "info"
+format = "pretty"
