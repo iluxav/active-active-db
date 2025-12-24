@@ -353,6 +353,8 @@ test_node_failure_and_recovery() {
     log_info "  SKIP: Node failure detection test"
 }
 
+
+
 print_summary() {
     echo ""
     echo "========================================"
