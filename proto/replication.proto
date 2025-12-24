@@ -11,6 +11,10 @@ service ReplicationService {
   // One-shot anti-entropy: request full state from a peer
   // Used for initial sync or after extended partitions
   rpc AntiEntropy(AntiEntropyRequest) returns (stream Delta);
+
+  // Join request for gossip-based peer discovery
+  // New nodes call this on seed nodes to get the current peer list
+  rpc Join(JoinRequest) returns (JoinResponse);
 }
 
 // Wrapper for all messages in the bidirectional stream
@@ -22,6 +26,8 @@ message ReplicationMessage {
     DeltaBatch delta_batch = 2;
     // Acknowledgment of received deltas
     Ack ack = 3;
+    // Gossip message for peer discovery
+    GossipMessage gossip = 4;
   }
 }
 
@@ -84,4 +90,89 @@ message Ack {
 message AntiEntropyRequest {
   // The requesting replica's ID
   string replica_id = 1;
+}
+
+// ============================================================
+// Gossip Protocol Messages for Peer Discovery
+// ============================================================
+
+// State of a peer in the gossip protocol
+enum PeerState {
+  PEER_STATE_UNKNOWN = 0;
+  PEER_STATE_ALIVE = 1;
+  PEER_STATE_SUSPECT = 2;
+  PEER_STATE_DEAD = 3;
+}
+
+// Information about a peer in the cluster
+message PeerInfo {
+  // The peer's stable replica ID
+  string replica_id = 1;
+  // The peer's replication address (e.g., "http://10.0.0.1:9001")
+  string replication_addr = 2;
+  // Incarnation number - monotonically increasing, bumped on restart
+  // Used to distinguish between old and new information about the same peer
+  uint64 incarnation = 3;
+  // Current state of this peer
+  PeerState state = 4;
+  // Timestamp when this peer was last seen alive (milliseconds since epoch)
+  uint64 last_seen_ms = 5;
+}
+
+// Wrapper for gossip messages
+message GossipMessage {
+  oneof message {
+    // Full peer list exchange
+    PeerListSync peer_list = 1;
+    // Heartbeat for failure detection
+    Heartbeat heartbeat = 2;
+    // Announcement that a peer is dead
+    DeadAnnouncement dead = 3;
+  }
+}
+
+// Full peer list exchange - sent during handshake and periodically
+message PeerListSync {
+  // Sender's replica ID
+  string from_replica_id = 1;
+  // All known peers including sender
+  repeated PeerInfo peers = 2;
+}
+
+// Lightweight heartbeat for failure detection
+message Heartbeat {
+  // Sender's replica ID
+  string replica_id = 1;
+  // Sender's current incarnation number
+  uint64 incarnation = 2;
+  // Timestamp when heartbeat was sent (milliseconds since epoch)
+  uint64 timestamp_ms = 3;
+}
+
+// Announcement that a peer has been detected as dead
+message DeadAnnouncement {
+  // The replica ID of the dead peer
+  string dead_replica_id = 1;
+  // The replica ID that detected the failure
+  string announced_by = 2;
+  // Timestamp of the announcement (milliseconds since epoch)
+  uint64 timestamp_ms = 3;
+}
+
+// Request to join the cluster (sent to seed nodes)
+message JoinRequest {
+  // The joining replica's ID
+  string replica_id = 1;
+  // The joining replica's replication address
+  string replication_addr = 2;
+  // The joining replica's incarnation number
+  uint64 incarnation = 3;
+}
+
+// Response to a join request
+message JoinResponse {
+  // Whether the join was accepted
+  bool accepted = 1;
+  // Current list of peers in the cluster
+  repeated PeerInfo peers = 2;
 }

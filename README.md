@@ -67,8 +67,36 @@ sudo cp target/release/a2db /usr/local/bin/
 
 ### Running
 
-```bash
-nohup a2db --replica-id "node1" --client-addr "0.0.0.0:9000" --replication-addr "0.0.0.0:9001" --redis-addr "0.0.0.0:6379" --peer http://64.23.155.53:9001 --persistence --data-dir "./data" --metrics-addr "0.0.0.0:9090" > a2db.log 2>&1 &
+```
+  Node 1 (10.114.0.2):
+  a2db --replica-id "node1" \
+    --replication-addr "0.0.0.0:9001" \
+    --redis-addr "0.0.0.0:6379" \
+    --discovery \
+    --seed "http://10.114.0.2:9001" \
+    --seed "http://10.124.0.3:9001" \
+    --advertise-addr "http://10.114.0.2:9001" \
+    --persistence \
+    --data-dir "./data" \
+    --metrics-addr "0.0.0.0:9090"
+```
+
+```
+ Node 2 (10.124.0.3):
+  a2db --replica-id "node2" \
+    --replication-addr "0.0.0.0:9001" \
+    --redis-addr "0.0.0.0:6379" \
+    --discovery \
+    --seed "http://10.114.0.2:9001" \
+    --seed "http://10.124.0.3:9001" \
+    --advertise-addr "http://10.124.0.3:9001" \
+    --persistence \
+    --data-dir "./data" \
+    --metrics-addr "0.0.0.0:9090"
+```
+
+```bashnohup a2db --replica-id "node1" --client-addr "0.0.0.0:9000" --replication-addr "0.0.0.0:9001" --redis-addr "0.0.0.0:6379" --peer http://64.23.155.53:9001 --persistence --data-dir "./data" --metrics-addr "0.0.0.0:9090" > a2db.log 2>&1 &
+
 ```
 
 ```bash
@@ -166,13 +194,25 @@ make docker-up      # Start in Docker
 ```bash
 ./target/release/a2db \
   --replica-id "us-west-1"           # Unique replica identifier
-  --client-addr "0.0.0.0:9000"       # gRPC client address
-  --replication-addr "0.0.0.0:9001"  # Replication address
+  --replication-addr "0.0.0.0:9001"  # Replication address (required)
   --redis-addr "0.0.0.0:6379"        # Redis protocol address
   --peer "http://peer1:9001"         # Peer replica (repeatable)
   --persistence                       # Enable snapshots
   --data-dir "./data"                # Snapshot directory
   --log-level "info"                 # trace/debug/info/warn/error
+```
+
+With gossip-based discovery:
+
+```bash
+./target/release/a2db \
+  --replica-id "node-1" \
+  --replication-addr "0.0.0.0:9001" \
+  --redis-addr "0.0.0.0:6379" \
+  --discovery \
+  --seed "http://10.0.0.1:9001" \
+  --seed "http://10.0.0.2:9001" \
+  --advertise-addr "http://10.0.0.3:9001"
 ```
 
 ### Environment Variables
@@ -181,20 +221,24 @@ All CLI args can be set via environment variables with `A2DB_` prefix:
 
 ```bash
 export A2DB_REPLICA_ID="node1"
-export A2DB_CLIENT_ADDR="0.0.0.0:9000"
 export A2DB_REPLICATION_ADDR="0.0.0.0:9001"
 export A2DB_REDIS_ADDR="0.0.0.0:6379"
 export A2DB_PEERS="http://peer1:9001,http://peer2:9001"
 export A2DB_PERSISTENCE=true
+
+# For gossip discovery:
+export A2DB_DISCOVERY=true
+export A2DB_SEEDS="http://10.0.0.1:9001,http://10.0.0.2:9001"
+export A2DB_ADVERTISE_ADDR="http://10.0.0.3:9001"
 ```
 
 ### Config File (TOML)
 
 ```toml
 [server]
-client_listen_addr = "0.0.0.0:9000"
 replication_listen_addr = "0.0.0.0:9001"
 redis_listen_addr = "0.0.0.0:6379"
+# client_listen_addr = "0.0.0.0:9000"  # Optional: gRPC API
 
 [identity]
 replica_id = "us-west-1"
@@ -215,6 +259,33 @@ format = "bincode"  # or "json"
 level = "info"
 format = "pretty"  # or "json"
 ```
+
+### Gossip-Based Peer Discovery
+
+Instead of static peer lists, enable automatic peer discovery:
+
+```toml
+[discovery]
+enabled = true
+seeds = ["http://10.0.0.1:9001", "http://10.0.0.2:9001"]
+advertise_addr = "http://10.0.0.3:9001"
+gossip_interval_ms = 1000
+gossip_fanout = 3
+heartbeat_interval_ms = 500
+suspect_threshold = 3
+suspect_timeout_ms = 5000
+dead_timeout_ms = 30000
+bootstrap_timeout_ms = 30000
+```
+
+With discovery enabled:
+
+- Nodes automatically find each other via seed nodes
+- Failed nodes are detected and removed (SWIM-style failure detection)
+- New nodes joining the cluster are discovered automatically
+- If seeds are unreachable, node starts alone after `bootstrap_timeout_ms`
+
+See `config/discovery-example.toml` for a complete example.
 
 ## Architecture
 

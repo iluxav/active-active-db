@@ -7,7 +7,7 @@ use a2db_proto::replication::v1::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, watch, RwLock};
 use tokio::time::sleep;
 use tokio_stream::StreamExt;
 use tonic::transport::Channel;
@@ -35,6 +35,8 @@ pub struct ReplicationClient {
     protocol_version: u32,
     /// Metrics for tracking replication stats
     metrics: Arc<Metrics>,
+    /// Optional shutdown signal for dynamic peer management
+    shutdown_rx: Option<watch::Receiver<bool>>,
 }
 
 impl ReplicationClient {
@@ -52,6 +54,36 @@ impl ReplicationClient {
             delta_rx,
             protocol_version: 1,
             metrics,
+            shutdown_rx: None,
+        }
+    }
+
+    /// Create a new ReplicationClient with a shutdown signal for dynamic peer management
+    pub fn new_with_shutdown(
+        peer_addr: String,
+        local_replica_id: String,
+        store: Arc<CounterStore>,
+        delta_rx: broadcast::Receiver<CoreDelta>,
+        metrics: Arc<Metrics>,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> Self {
+        Self {
+            peer_addr,
+            local_replica_id,
+            store,
+            delta_rx,
+            protocol_version: 1,
+            metrics,
+            shutdown_rx: Some(shutdown_rx),
+        }
+    }
+
+    /// Check if shutdown was signaled
+    fn is_shutdown(&self) -> bool {
+        if let Some(ref rx) = self.shutdown_rx {
+            *rx.borrow()
+        } else {
+            false
         }
     }
 
@@ -61,6 +93,15 @@ impl ReplicationClient {
         let max_retry_delay = Duration::from_secs(60);
 
         loop {
+            // Check for shutdown before attempting connection
+            if self.is_shutdown() {
+                info!(
+                    "Shutdown signal received, stopping ReplicationClient for {}",
+                    self.peer_addr
+                );
+                return;
+            }
+
             info!("Connecting to peer: {}", self.peer_addr);
 
             match self.connect_and_sync().await {
@@ -73,11 +114,37 @@ impl ReplicationClient {
                 }
             }
 
-            // Exponential backoff with jitter
+            // Check for shutdown before sleeping
+            if self.is_shutdown() {
+                info!(
+                    "Shutdown signal received, stopping ReplicationClient for {}",
+                    self.peer_addr
+                );
+                return;
+            }
+
+            // Exponential backoff with jitter, but also watch for shutdown
             let jitter = Duration::from_millis(rand_jitter(500));
             let delay = retry_delay + jitter;
             warn!("Reconnecting to {} in {:?}", self.peer_addr, delay);
-            sleep(delay).await;
+
+            // Sleep but also check for shutdown signal
+            if let Some(ref mut rx) = self.shutdown_rx {
+                tokio::select! {
+                    _ = sleep(delay) => {}
+                    _ = rx.changed() => {
+                        if *rx.borrow() {
+                            info!(
+                                "Shutdown signal received during backoff, stopping ReplicationClient for {}",
+                                self.peer_addr
+                            );
+                            return;
+                        }
+                    }
+                }
+            } else {
+                sleep(delay).await;
+            }
 
             // Increase delay for next retry
             retry_delay = std::cmp::min(retry_delay * 2, max_retry_delay);
@@ -226,6 +293,10 @@ impl ReplicationClient {
                             }
                             Message::Handshake(_) => {
                                 warn!("Unexpected handshake");
+                            }
+                            Message::Gossip(gossip_msg) => {
+                                // Gossip messages are handled by GossipManager when discovery is enabled
+                                debug!("Received gossip message: {:?}", gossip_msg);
                             }
                         }
                     }
