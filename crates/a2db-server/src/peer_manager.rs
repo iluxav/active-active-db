@@ -61,8 +61,13 @@ impl PeerManager {
         info!("PeerManager started");
 
         while let Some(event) = self.event_rx.recv().await {
+            info!("Received peer event: {:?}", event);
             match event {
                 PeerEvent::Joined(peer) => {
+                    info!(
+                        "Processing Joined event for {} at {}",
+                        peer.replica_id, peer.replication_addr
+                    );
                     self.handle_peer_joined(peer).await;
                 }
                 PeerEvent::Left(replica_id) => {

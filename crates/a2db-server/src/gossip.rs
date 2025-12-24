@@ -206,8 +206,17 @@ impl GossipManager {
     pub async fn merge_peer_info(&self, incoming: PeerInfo) -> bool {
         // Don't add ourselves
         if incoming.replica_id == self.local_replica_id {
+            debug!(
+                "Skipping peer {} (same as local replica)",
+                incoming.replica_id
+            );
             return false;
         }
+
+        info!(
+            "Merging peer info: {} at {}",
+            incoming.replica_id, incoming.replication_addr
+        );
 
         let replica_id = incoming.replica_id.clone();
         let mut is_new = false;
@@ -246,8 +255,14 @@ impl GossipManager {
             self.peers.insert(replica_id.clone(), incoming.clone());
 
             // Notify about new peer
+            info!(
+                "New peer discovered: {} at {}, sending Joined event",
+                incoming.replica_id, incoming.replication_addr
+            );
             if let Err(e) = self.event_tx.send(PeerEvent::Joined(incoming)).await {
                 warn!("Failed to send peer joined event: {}", e);
+            } else {
+                info!("PeerEvent::Joined sent successfully");
             }
 
             is_new
