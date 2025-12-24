@@ -42,7 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(
         replica_id = %config.identity.replica_id,
-        "Starting a2db (Active-Active Database)"
+        "Starting a2db (Active-Active Database)!"
     );
 
     // Create the counter store
@@ -140,18 +140,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Determine advertise address for replication service
     let advertise_addr = if config.discovery.enabled {
-        config
-            .discovery
-            .advertise_addr
-            .clone()
-            .unwrap_or_else(|| {
-                let addr = &config.server.replication_listen_addr;
-                if addr.starts_with("http://") || addr.starts_with("https://") {
-                    addr.clone()
-                } else {
-                    format!("http://{}", addr)
-                }
-            })
+        config.discovery.advertise_addr.clone().unwrap_or_else(|| {
+            let addr = &config.server.replication_listen_addr;
+            if addr.starts_with("http://") || addr.starts_with("https://") {
+                addr.clone()
+            } else {
+                format!("http://{}", addr)
+            }
+        })
     } else {
         // For static peer mode, still set an advertise address
         let addr = &config.server.replication_listen_addr;
